@@ -67,12 +67,15 @@ git config --global --add wt.copy .env
 - The source is Bash (macOS system Bash 3.2 or newer), and the Zsh integration invokes the Bash CLI.
 - Only common shell path-template variables are implemented (`{.worktreeRoot}`, `{.repo.Main}`, `{.repo.Name}`, `{.branch}`, `{.env.NAME}`, `{.env.NAME:-fallback}`). Clone placement supports `repoRoot`, host, owner, name, and default branch.
 - File copy/linking is a small subset of the original. Worktree selection and glob matching use shell rules, not the original's full gitignore matcher; copying does not use reflinks. `wt mr` currently needs an MR argument. JSON output and built-in CI dashboard are not implemented.
-- Use caution with manually configured destination paths. These are local filesystem operations; the script does not implement the original program's full path-safety or transaction protections.
+- Destination checks prevent writing into the filesystem root, Git metadata, protected user/system configuration paths, or existing checkouts. The script resolves existing and dangling symlinks, rejects already-present destination paths, revalidates after creating parent directories, and confines auto-generated clone paths to `wt.repoRoot`.
+- Failed/interrupted `create`/`co` operations attempt to remove **only the newly registered worktree** (including partially copied files). A branch created by that operation is deleted only if its commit hasn't changed. Pre-existing branches are preserved. `migrate` validates its complete plan and attempts to reverse earlier moves if a later move fails.
+- **Limits:** These checks do not make filesystem operations atomic or race-free. Concurrent path/symlink changes can defeat preflight checks, and a failed rollback may require manual inspection. Git hooks/config inclusions and all sensitive filesystem paths are not fully audited; this is not a security sandbox or complete replacement for the original Go tool's hardening. Clone failures rely on Git's own cleanup; use trusted configuration and avoid running against actively changing worktrees.
 
 ## Testing
 
 ```bash
 bash tests/test.sh
+bash tests/safety.sh
 ```
 
 ## License
