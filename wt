@@ -75,6 +75,162 @@ worktree_path() {
   explicit=$(config pattern ''); [[ -z "$explicit" ]] || pattern=$explicit
   render "$pattern" "$branch" "$main" "$name" "$root" "$sep"
 }
+# Resolve existing and dangling symlinks without GNU-specific realpath flags.
+# The result is an absolute, normalized path, even when the leaf does not exist.
+canonical_path() {
+  local rest=$1 prefix='' part candidate link hops=0
+  [[ "$rest" == /* ]] || fail "absolute path required: $rest"
+  while [[ -n "$rest" ]]; do
+    rest=${rest#/}
+    part=${rest%%/*}
+    if [[ "$rest" == */* ]]; then rest=${rest#*/}; else rest=''; fi
+    case "$part" in ''|.) continue;; '..') prefix=${prefix%/*}; continue;; esac
+    candidate="${prefix}/${part}"
+    if [[ -L "$candidate" ]]; then
+      hops=$((hops+1))
+      ((hops <= 40)) || fail "too many symlinks in path: $1"
+      link=$(readlink "$candidate") || fail "cannot read symlink: $candidate"
+      [[ "$link" == /* ]] && rest="$link/$rest" || rest="$prefix/$link/$rest"
+      prefix=''
+    else
+      prefix=$candidate
+    fi
+  done
+  printf '%s\n' "${prefix:-/}"
+}
+within_path() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
+# Reject destinations that could replace Git metadata, personal configuration,
+# an existing checkout, or files outside the user's intended working area.
+# This is preflight protection, not an atomic filesystem sandbox: another
+# process can still mutate symlinks or directories after the check.
+validate_destination() {
+  local requested=$1 mode=$2 resolved home sensitive lower cur path main i gitdir parent
+  [[ "$requested" == /* && "$requested" != *$'\n'* && "$requested" != *$'\r'* ]] || fail "unsafe destination: $requested"
+  # Only a newly-created directory may be used; never adopt existing content.
+  [[ ! -e "$requested" && ! -L "$requested" ]] || fail "destination exists: $requested"
+  resolved=$(canonical_path "$requested")
+  home=$(canonical_path "$HOME")
+  [[ "$resolved" != / ]] || fail 'cannot use filesystem root as destination'
+  [[ "$resolved" != "$home" ]] || fail 'cannot use home directory as destination'
+  lower=$(printf '%s' "$resolved" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  case "/${lower#/}/" in *'/.git/'*) fail "destination enters Git metadata: $resolved";; esac
+  for sensitive in "$home/.config" "$home/.ssh" "$home/.gnupg" "$home/.gitconfig" \
+                   "$home/.git-credentials" "$home/.bashrc" "$home/.zshrc" "$home/.profile"; do
+    sensitive=$(canonical_path "$sensitive")
+    within_path "$resolved" "$sensitive" && fail "destination targets protected user configuration: $resolved"
+  done
+  if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then
+    sensitive=$(canonical_path "$XDG_CONFIG_HOME")
+    within_path "$resolved" "$sensitive" && fail "destination targets XDG configuration: $resolved"
+  fi
+  for sensitive in "${GIT_CONFIG_GLOBAL:-}" "${GIT_CONFIG_SYSTEM:-}" "${GIT_TEMPLATE_DIR:-}"; do
+    if [[ "$sensitive" == /* ]]; then
+      sensitive=$(canonical_path "$sensitive")
+      within_path "$resolved" "$sensitive" && fail "destination targets Git configuration: $resolved"
+    fi
+  done
+  for sensitive in /etc /usr /bin /sbin /boot /dev /proc /sys /System /Library /Applications; do
+    within_path "$resolved" "$sensitive" && fail "destination targets protected system location: $resolved"
+  done
+  # Find Git repositories or bare repositories along the target's ancestry.
+  parent=${resolved%/*}; [[ -n "$parent" ]] || parent=/
+  cur=$parent
+  while [[ "$cur" != / ]]; do
+    if [[ -d "$cur" ]] && git rev-parse --resolve-git-dir "$cur" >/dev/null 2>&1; then
+      fail "destination enters a Git directory: $resolved"
+    fi
+    cur=${cur%/*}; [[ -n "$cur" ]] || cur=/
+  done
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    load_worktrees
+    main=$(canonical_path "$(main_dir)")
+    for ((i=0;i<${#WT_PATHS[@]};i++)); do
+      path=$(canonical_path "${WT_PATHS[$i]}")
+      # A worktree may intentionally live in the primary checkout's .worktrees/.
+      if [[ "$path" == "$main" && "$mode" == worktree && "$(config strategy global)" == inside-dotdir             && "$resolved" == "$main/.worktrees/"* ]]; then
+        continue
+      fi
+      if within_path "$resolved" "$path" || within_path "$path" "$resolved"; then
+        fail "destination overlaps an existing worktree: $resolved"
+      fi
+    done
+  fi
+  # Covers unrelated working trees not shown by git worktree list.
+  cur=$parent
+  while [[ "$cur" != / ]]; do
+    if [[ -d "$cur" ]]; then
+      gitdir=$(git -C "$cur" rev-parse --show-toplevel 2>/dev/null || :)
+      if [[ -n "$gitdir" ]]; then
+        gitdir=$(canonical_path "$gitdir")
+        if [[ "$mode" == worktree && "$(config strategy global)" == inside-dotdir             && "$gitdir" == "$(canonical_path "$(main_dir)")"             && "$resolved" == "$gitdir/.worktrees/"* ]]; then
+          break
+        fi
+        fail "destination is inside a Git checkout: $resolved"
+      fi
+    fi
+    cur=${cur%/*}; [[ -n "$cur" ]] || cur=/
+  done
+  printf '%s\n' "$resolved"
+}
+
+# A newly created worktree is rolled back if any step (including file copying)
+# fails or the command is interrupted. Existing branches are always preserved.
+TX_ACTIVE=0; TX_PATH=''; TX_BRANCH=''; TX_NEW_BRANCH=0; TX_INITIAL_HEAD=''; TX_ADDED=0
+MIG_ACTIVE=0; MIG_FROM=(); MIG_TO=()
+rollback_worktree() {
+  local status=$1 line path branch registered=0 current_head
+  [[ "$TX_ACTIVE" == 1 && "$status" -ne 0 ]] || return 0
+  TX_ACTIVE=0
+  while IFS= read -r line; do
+    case "$line" in
+      'worktree '*) path=${line#worktree }; branch='' ;;
+      'branch refs/heads/'*) branch=${line#branch refs/heads/}
+        [[ "$path" == "$TX_PATH" && "$branch" == "$TX_BRANCH" ]] && registered=1 ;;
+    esac
+  done < <(git worktree list --porcelain 2>/dev/null || :)
+  if [[ "$registered" == 1 && ! -L "$TX_PATH" && "$(canonical_path "$TX_PATH")" == "$TX_PATH" ]]; then
+    if git worktree remove --force "$TX_PATH" >&2; then
+      warn "rolled back newly created worktree: $TX_PATH"
+    else
+      warn "rollback failed; inspect worktree manually: $TX_PATH"
+      return 0
+    fi
+  elif [[ -e "$TX_PATH" || -L "$TX_PATH" ]]; then
+    warn "rollback left a path that needs manual inspection: $TX_PATH"
+    return 0
+  fi
+  # Never delete a branch if Git failed before registering this worktree:
+  # another process may have created it concurrently.
+  if [[ "$TX_NEW_BRANCH" == 1 && ( "$TX_ADDED" == 1 || "$registered" == 1 ) ]]; then
+    current_head=$(git rev-parse "refs/heads/$TX_BRANCH" 2>/dev/null || :)
+    if [[ -n "$current_head" && "$current_head" == "$TX_INITIAL_HEAD" ]]; then
+      git branch -D -- "$TX_BRANCH" >/dev/null 2>&1 || warn "could not remove newly created branch: $TX_BRANCH"
+    elif [[ -n "$current_head" ]]; then
+      warn "preserving branch with unexpected changes: $TX_BRANCH"
+    fi
+  fi
+}
+rollback_migration() {
+  local status=$1 i
+  [[ "$MIG_ACTIVE" == 1 && "$status" -ne 0 ]] || return 0
+  MIG_ACTIVE=0
+  for ((i=${#MIG_FROM[@]}-1;i>=0;i--)); do
+    if git worktree move "${MIG_TO[$i]}" "${MIG_FROM[$i]}" >&2; then
+      warn "rolled back migration: ${MIG_TO[$i]} -> ${MIG_FROM[$i]}"
+    else
+      warn "could not roll back migration; inspect ${MIG_TO[$i]} manually"
+    fi
+  done
+}
+on_exit() {
+  local status=$1
+  rollback_worktree "$status"
+  rollback_migration "$status"
+}
+trap 'on_exit "$?"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Parse Git's porcelain format rather than its human-readable columns.
 WT_PATHS=(); WT_BRANCHES=()
 load_worktrees() {
@@ -215,19 +371,34 @@ create_worktree() {
   [[ -n "$branch" ]] || fail 'branch name required'
   if exists=$(find_worktree "$branch"); then print_location "$exists"; return 0; fi
   git check-ref-format --branch "$branch" >/dev/null || fail "invalid branch: $branch"
-  path=$(worktree_path "$branch")
-  mkdir -p "$(dirname "$path")"
-  path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+  path=$(validate_destination "$(worktree_path "$branch")" worktree)
+  TX_PATH=$path; TX_BRANCH=$branch; TX_NEW_BRANCH=0; TX_INITIAL_HEAD=''; TX_ADDED=0
   if [[ -n "$base" ]]; then
-    git worktree add -b "$branch" "$path" "$base" >&2
+    [[ ! -e "$path" && ! -L "$path" ]] || fail "destination exists: $path"
+    TX_NEW_BRANCH=1
+    TX_INITIAL_HEAD=$(git rev-parse --verify "$base^{commit}") || fail "invalid base: $base"
   elif git show-ref --verify --quiet "refs/heads/$branch"; then
-    git worktree add "$path" "$branch" >&2
+    :
   elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    git worktree add --track -b "$branch" "$path" "origin/$branch" >&2
+    TX_NEW_BRANCH=1
+    TX_INITIAL_HEAD=$(git rev-parse "refs/remotes/origin/$branch")
   else
     fail "branch '$branch' not found; use 'wt create $branch'"
   fi
+  mkdir -p "$(dirname "$path")"
+  # Resolve again after creating parent directories, before Git writes anything.
+  [[ "$(validate_destination "$path" worktree)" == "$path" ]] || fail 'destination changed while preparing worktree'
+  TX_ACTIVE=1
+  if [[ -n "$base" ]]; then
+    git worktree add -b "$branch" "$path" "$base" >&2
+  elif [[ "$TX_NEW_BRANCH" == 0 ]]; then
+    git worktree add "$path" "$branch" >&2
+  else
+    git worktree add --track -b "$branch" "$path" "origin/$branch" >&2
+  fi
+  TX_ADDED=1
   [[ "$NO_COPY" == 1 ]] || copy_files "$path"
+  TX_ACTIVE=0
   print_location "$path"
 }
 cmd_create() {
@@ -331,6 +502,11 @@ cmd_clone() {
   elif [[ "$url" == *:* ]]; then host=${url%%:*}; host=${host##*@}; fi
   branch=$(git ls-remote --symref "$url" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$|\1|p' | head -1)
   branch=${branch:-main}
+  # A repository URL is not permission to choose an arbitrary destination.
+  for value in "$host" "$owner" "$name" "$branch"; do
+    [[ -n "$value" && "$value" != . && "$value" != .. && "$value" != '~'* ]] || fail "unsafe repository path component: $value"
+    case "/$value/" in *'/../'*|*'/./'*) fail "unsafe repository path component: $value";; esac
+  done
   if [[ -z "$dest" ]]; then
     root=$(expand_home "$(config repoRoot '~/dev/repos')")
     pattern=$(config repoPattern '{.repoRoot}/{.repo.Host}/{.repo.Owner}/{.repo.Name}/{.branch}')
@@ -338,11 +514,12 @@ cmd_clone() {
     pattern=${pattern//\{.repo.Owner\}/$owner}; pattern=${pattern//\{.repo.Name\}/$name}
     pattern=${pattern//\{.branch\}/$branch}
     dest=$(expand_home "$pattern")
+    [[ "$(canonical_path "$dest")" == "$(canonical_path "$root")/"* ]] || fail 'generated clone path must remain inside wt.repoRoot; pass an explicit destination to override'
   else dest=$(expand_home "$dest"); fi
-  [[ "$dest" == /* ]] || fail 'clone destination must be absolute'
-  [[ "$dest" != *'/../'* ]] || fail 'clone destination cannot contain ..'
+  dest=$(validate_destination "$dest" clone)
   mkdir -p "$(dirname "$dest")"
-  git clone "$url" "$dest" >&2
+  [[ "$(validate_destination "$dest" clone)" == "$dest" ]] || fail 'clone destination changed before checkout'
+  git clone -- "$url" "$dest" >&2
   print_location "$dest"
 }
 cmd_cleanup() {
@@ -366,22 +543,37 @@ cmd_cleanup() {
   done
 }
 cmd_migrate() {
-  local dry=0 arg branch path target i
+  local dry=0 arg branch path target i j
+  local froms=() tos=()
   for arg in "$@"; do case "$arg" in --dry-run) dry=1;; *) fail "unknown migrate option: $arg";; esac; done
   load_worktrees
+  # Validate the complete plan before moving anything.
   for ((i=1;i<${#WT_PATHS[@]};i++)); do
     branch=${WT_BRANCHES[$i]}; path=${WT_PATHS[$i]}
     [[ "$branch" != '(detached)' ]] || continue
     target=$(worktree_path "$branch")
-    [[ "$target" != "$path" ]] || continue
+    [[ "$(canonical_path "$target")" != "$(canonical_path "$path")" ]] || continue
+    target=$(validate_destination "$target" worktree)
+    for ((j=0;j<${#tos[@]};j++)); do
+      if within_path "$target" "${tos[$j]}" || within_path "${tos[$j]}" "$target"; then
+        fail "migration targets overlap: $target and ${tos[$j]}"
+      fi
+    done
+    froms+=("$path"); tos+=("$target")
+  done
+  MIG_FROM=(); MIG_TO=(); [[ "$dry" == 1 ]] || MIG_ACTIVE=1
+  for ((i=0;i<${#tos[@]};i++)); do
+    path=${froms[$i]}; target=${tos[$i]}
     if [[ "$dry" == 1 ]]; then printf '%s -> %s\n' "$path" "$target"
     else
-      [[ ! -e "$target" ]] || fail "target exists: $target"
       mkdir -p "$(dirname "$target")"
+      [[ "$(validate_destination "$target" worktree)" == "$target" ]] || fail 'migration target changed'
       git worktree move "$path" "$target" >&2
+      MIG_FROM+=("$path"); MIG_TO+=("$target")
       warn "moved $path -> $target"
     fi
   done
+  MIG_ACTIVE=0
 }
 usage() {
   cat <<'HELP'
@@ -538,6 +730,6 @@ case "$cmd" in
   cleanup) cmd_cleanup "$@";;
   migrate) cmd_migrate "$@";;
   prune) git worktree prune "$@";;
-  version) printf 'wt shell 0.1.0\n';;
+  version) printf 'wt shell 0.2.0\n';;
   *) fail "unknown command: $cmd (see wt --help)";;
 esac
