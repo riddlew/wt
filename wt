@@ -1,0 +1,543 @@
+#!/usr/bin/env bash
+# wt: a Git worktree helper implemented in Bash.
+# Inspired by https://github.com/timvw/wt (MIT-licensed Go project).
+set -euo pipefail
+
+fail() { printf 'wt: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'wt: %s\n' "$*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"; }
+trim() { local v=$1; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+expand_home() { case "$1" in '~') printf '%s' "$HOME";; '~/'*) printf '%s/%s' "$HOME" "${1:2}";; *) printf '%s' "$1";; esac; }
+config() { git config --get "wt.$1" 2>/dev/null || printf '%s' "${2-}"; }
+config_scope() { git config "$SCOPE" "$@"; }
+main_dir() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail 'run this command inside a Git worktree'
+  local line
+  while IFS= read -r line; do case "$line" in 'worktree '*) printf '%s' "${line#worktree }"; return;; esac; done < <(git worktree list --porcelain)
+  fail 'unable to locate primary worktree'
+}
+repo_name() {
+  local url name
+  url=$(git remote get-url origin 2>/dev/null || :)
+  if [[ -n "$url" ]]; then
+    name=${url##*/}; name=${name##*:}; name=${name%.git}
+  else
+    name=$(basename "$(main_dir)")
+  fi
+  printf '%s' "$name"
+}
+default_branch() {
+  local b
+  b=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || :)
+  [[ -n "$b" ]] && { printf '%s' "$b"; return; }
+  for b in main master; do git show-ref --verify --quiet "refs/heads/$b" && { printf '%s' "$b"; return; }; done
+  git symbolic-ref --quiet --short HEAD 2>/dev/null || printf 'HEAD'
+}
+root_path() { expand_home "$(config root '~/.worktrees')"; }
+# This is intentionally a small, predictable subset of the Go program's templating.
+render() {
+  local pattern=$1 branch=$2 main=$3 name=$4 root=$5 sep=$6 value token variable fallback
+  local parent=${main%/*}
+  [[ -n "$parent" ]] || parent=/
+  pattern=${pattern//\{.worktreeRoot\}/$root}
+  pattern=${pattern//\{.repo.Main\}/$main}
+  pattern=${pattern//\{.repo.Name\}/$name}
+  value=${branch//\//$sep}; value=${value//\\/$sep}
+  pattern=${pattern//\{.branch\}/$value}
+  # Environment expansion: {.env.NAME} or {.env.NAME:-fallback}.
+  while [[ "$pattern" =~ \{\.env\.([a-zA-Z_][a-zA-Z_0-9]*)(:-([^}]*))?\} ]]; do
+    token=${BASH_REMATCH[0]}; variable=${BASH_REMATCH[1]}; fallback=${BASH_REMATCH[3]-}
+    value=${!variable-}; [[ -n "$value" ]] || value=$fallback
+    value=${value//\//$sep}; value=${value//\\/$sep}
+    pattern=${pattern/"$token"/$value}
+  done
+  [[ "$pattern" != *'{.'* ]] || fail "unknown path-template variable in $pattern"
+  pattern=$(expand_home "$pattern")
+  [[ "$pattern" == /* ]] || fail "worktree path must be absolute: $pattern"
+  printf '%s' "$pattern"
+}
+worktree_path() {
+  local branch=$1 main name root strategy sep pattern
+  main=$(main_dir); name=$(repo_name); root=$(root_path)
+  strategy=$(config strategy global); sep=$(config separator /)
+  case "$strategy" in
+    global) pattern='{.worktreeRoot}/{.repo.Name}/{.branch}' ;;
+    sibling-repo) pattern='{.repo.Main}/../{.repo.Name}-{.branch}' ;;
+    parent-branches) pattern='{.repo.Main}/../{.branch}' ;;
+    parent-worktrees) pattern='{.repo.Main}/../{.repo.Name}.worktrees/{.branch}' ;;
+    parent-dotdir) pattern='{.repo.Main}/../.worktrees/{.branch}' ;;
+    inside-dotdir) pattern='{.repo.Main}/.worktrees/{.branch}' ;;
+    custom) pattern=$(config pattern ''); [[ -n "$pattern" ]] || fail 'custom strategy requires wt.pattern' ;;
+    *) fail "unknown strategy: $strategy" ;;
+  esac
+  # Explicit pattern always overrides a preselected strategy, matching timvw/wt.
+  local explicit
+  explicit=$(config pattern ''); [[ -z "$explicit" ]] || pattern=$explicit
+  render "$pattern" "$branch" "$main" "$name" "$root" "$sep"
+}
+# Parse Git's porcelain format rather than its human-readable columns.
+WT_PATHS=(); WT_BRANCHES=()
+load_worktrees() {
+  WT_PATHS=(); WT_BRANCHES=()
+  local line path='' branch=''
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      'worktree '*)
+        if [[ -n "$path" ]]; then WT_PATHS+=("$path"); WT_BRANCHES+=("$branch"); fi
+        path=${line#worktree }; branch='(detached)' ;;
+      'branch refs/heads/'*) branch=${line#branch refs/heads/} ;;
+    esac
+  done < <(git worktree list --porcelain)
+  if [[ -n "$path" ]]; then WT_PATHS+=("$path"); WT_BRANCHES+=("$branch"); fi
+}
+find_worktree() {
+  local query=$1 i
+  load_worktrees
+  for ((i=0;i<${#WT_PATHS[@]};i++)); do
+    if [[ "${WT_BRANCHES[$i]}" == "$query" || "${WT_PATHS[$i]}" == "$query" ]]; then
+      printf '%s' "${WT_PATHS[$i]}"; return 0
+    fi
+  done
+  return 1
+}
+choose() {
+  local prompt=$1 line answer i=0
+  shift
+  (($#)) || fail "no $prompt available"
+  if command -v fzf >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+    printf '%s\n' "$@" | fzf --prompt="$prompt> "
+    return
+  fi
+  [[ -r /dev/tty ]] || fail "specify $prompt explicitly (no interactive terminal)"
+  for line in "$@"; do i=$((i+1)); printf '%2d) %s\n' "$i" "$line" >&2; done
+  while true; do
+    printf 'Choose %s [1-%d]: ' "$prompt" "$i" >&2
+    IFS= read -r answer < /dev/tty || return 1
+    case "$answer" in *[!0-9]*|'') warn 'enter a number' ;; *)
+      if ((answer>=1 && answer<=i)); then
+        local index=1
+        for line in "$@"; do if ((index==answer)); then printf '%s' "$line"; return; fi; index=$((index+1)); done
+      fi
+      warn 'invalid selection' ;;
+    esac
+  done
+}
+all_branches() {
+  git for-each-ref --format='%(refname:short)' refs/heads refs/remotes | sed '/\/HEAD$/d' | sort -u
+}
+select_branch() {
+  local choices=() line
+  while IFS= read -r line; do [[ -z "$line" ]] || choices+=("$line"); done < <(all_branches)
+  choose branch "${choices[@]}"
+}
+select_worktree() {
+  load_worktrees
+  local opts=() i
+  for ((i=0;i<${#WT_PATHS[@]};i++)); do opts+=("${WT_BRANCHES[$i]}"); done
+  choose worktree "${opts[@]}"
+}
+print_location() {
+  local path=$1
+  if [[ "$PRINT_PATH" == 1 ]]; then printf '%s\n' "$path"
+  else printf '%s\n' "$path"; fi
+}
+copy_files() {
+  local target=$1 base rel item rule skip prior copied=0 source dest
+  local copy_rules=() link_rules=() exclude_rules=()
+  base=$(main_dir)
+  while IFS= read -r rule; do [[ -z "$rule" ]] || copy_rules+=("$rule"); done < <(git config --get-all wt.copy 2>/dev/null || :)
+  while IFS= read -r rule; do [[ -z "$rule" ]] || link_rules+=("$rule"); done < <(git config --get-all wt.link 2>/dev/null || :)
+  while IFS= read -r rule; do [[ -z "$rule" ]] || exclude_rules+=("$rule"); done < <(git config --get-all wt.exclude 2>/dev/null || :)
+  if [[ -f "$base/.worktreeinclude" && ! -L "$base/.worktreeinclude" ]]; then
+    while IFS= read -r rule || [[ -n "$rule" ]]; do
+      rule=$(trim "$rule"); [[ -z "$rule" || "$rule" == \#* ]] || copy_rules+=("$rule")
+    done < "$base/.worktreeinclude"
+  fi
+  [[ ${#copy_rules[@]} -gt 0 || ${#link_rules[@]} -gt 0 || "$(config copyIgnored false)" == true ]] || return 0
+  # Link rules name literal untracked paths. Link a directory once, not each of its files.
+  for rel in "${link_rules[@]}"; do
+    rel=${rel%/}; source="$base/$rel"; dest="$target/$rel"
+    [[ -n "$rel" && "$rel" != /* && "$rel" != ../* && "$rel" != */../* ]] || continue
+    [[ -e "$source" || -L "$source" ]] || continue
+    [[ ! -e "$dest" && ! -L "$dest" ]] || continue
+    [[ -z "$(git -C "$base" ls-files -- "$rel")" ]] || continue
+    [[ -z "$(git -C "$target" ls-files -- "$rel")" ]] || continue
+    skip=0
+    for rule in "${exclude_rules[@]}"; do [[ "$rel" == $rule || "$rel" == ${rule%/}/* ]] && skip=1; done
+    [[ "$skip" == 0 ]] || continue
+    prior=$target; item=$rel
+    while [[ "$item" == */* ]]; do
+      prior="$prior/${item%%/*}"; item=${item#*/}
+      [[ ! -L "$prior" ]] || { skip=1; break; }
+    done
+    [[ "$skip" == 0 ]] || continue
+    mkdir -p "$(dirname "$dest")"
+    ln -s "$source" "$dest"
+    copied=$((copied+1))
+  done
+  # Git supplies untracked/ignored candidate files; never copy tracked files.
+  while IFS= read -r -d '' rel; do
+    [[ "$rel" != .git/* && "$rel" != ../* && "$rel" != /* && "$rel" != */../* ]] || continue
+    skip=0
+    if [[ "$(config copyIgnored false)" != true ]]; then
+      skip=1
+      for rule in "${copy_rules[@]}"; do
+        [[ "$rule" == '!'* ]] && continue
+        [[ "$rel" == $rule || "$rel" == ${rule%/}/* ]] && skip=0
+      done
+    fi
+    for rule in "${copy_rules[@]}"; do
+      if [[ "$rule" == '!'* ]]; then
+        rule=${rule#!}
+        [[ "$rel" == $rule || "$rel" == ${rule%/}/* ]] && skip=1
+      fi
+    done
+    for rule in "${exclude_rules[@]}"; do
+      [[ "$rel" == $rule || "$rel" == ${rule%/}/* ]] && skip=1
+    done
+    [[ "$skip" == 0 ]] || continue
+    [[ -n "$(git -C "$target" ls-files -- "$rel")" ]] && continue
+    [[ ! -e "$target/$rel" && ! -L "$target/$rel" ]] || continue
+    prior=$target; item=$rel
+    while [[ "$item" == */* ]]; do
+      prior="$prior/${item%%/*}"; item=${item#*/}
+      [[ ! -L "$prior" ]] || { skip=1; break; }
+    done
+    [[ "$skip" == 0 ]] || continue
+    mkdir -p "$(dirname "$target/$rel")"
+    cp -P "$base/$rel" "$target/$rel"
+    copied=$((copied+1))
+  done < <(git -C "$base" ls-files --others --exclude-standard -z; git -C "$base" ls-files --others --ignored --exclude-standard -z)
+  warn "populated $copied file(s) in $target"
+}
+create_worktree() {
+  local branch=$1 base=${2-} path exists
+  [[ -n "$branch" ]] || fail 'branch name required'
+  if exists=$(find_worktree "$branch"); then print_location "$exists"; return 0; fi
+  git check-ref-format --branch "$branch" >/dev/null || fail "invalid branch: $branch"
+  path=$(worktree_path "$branch")
+  mkdir -p "$(dirname "$path")"
+  path="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+  if [[ -n "$base" ]]; then
+    git worktree add -b "$branch" "$path" "$base" >&2
+  elif git show-ref --verify --quiet "refs/heads/$branch"; then
+    git worktree add "$path" "$branch" >&2
+  elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git worktree add --track -b "$branch" "$path" "origin/$branch" >&2
+  else
+    fail "branch '$branch' not found; use 'wt create $branch'"
+  fi
+  [[ "$NO_COPY" == 1 ]] || copy_files "$path"
+  print_location "$path"
+}
+cmd_create() {
+  local branch=${1-} base=${2-}
+  [[ -n "$branch" ]] || fail 'usage: wt create BRANCH [BASE]'
+  if git show-ref --verify --quiet "refs/heads/$branch"; then fail "branch '$branch' exists; use wt co"; fi
+  [[ -n "$base" ]] || base=$(default_branch)
+  create_worktree "$branch" "$base"
+}
+cmd_checkout() {
+  local branch=${1-}
+  [[ -n "$branch" ]] || branch=$(select_branch)
+  if [[ "$branch" == */* && "$branch" == origin/* ]]; then
+    branch=${branch#origin/}
+  fi
+  create_worktree "$branch"
+}
+cmd_cd() {
+  local branch=${1-} path
+  [[ -n "$branch" ]] || branch=$(select_worktree)
+  path=$(find_worktree "$branch") || fail "no worktree for $branch"
+  print_location "$path"
+}
+cmd_list() {
+  local i current
+  load_worktrees
+  current=$(git rev-parse --show-toplevel 2>/dev/null || :)
+  for ((i=0;i<${#WT_PATHS[@]};i++)); do
+    if [[ "$current" == "${WT_PATHS[$i]}" ]]; then printf '* '; else printf '  '; fi
+    printf '%-28s %s\n' "${WT_BRANCHES[$i]}" "${WT_PATHS[$i]}"
+  done
+}
+cmd_rm() {
+  local branch=${1-} path primary
+  [[ -n "$branch" ]] || branch=$(select_worktree)
+  path=$(find_worktree "$branch") || fail "no worktree for $branch"
+  primary=$(main_dir)
+  [[ "$path" != "$primary" ]] || fail 'cannot remove the primary worktree'
+  git worktree remove "$path"
+  warn "removed $path (branch retained)"
+}
+cmd_status() {
+  local i branch path dirty sync current left right counts
+  load_worktrees
+  current=$(git rev-parse --show-toplevel 2>/dev/null || :)
+  printf '%-2s %-24s %-10s %-13s %s\n' '' BRANCH STATUS UPSTREAM PATH
+  for ((i=0;i<${#WT_PATHS[@]};i++)); do
+    branch=${WT_BRANCHES[$i]}; path=${WT_PATHS[$i]}
+    if [[ ! -d "$path" ]]; then dirty=missing; sync='-'
+    else
+      if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null || :)" ]]; then dirty=dirty; else dirty=clean; fi
+      sync='-'
+      if counts=$(git -C "$path" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null); then
+        read -r left right <<< "$counts"
+        sync="behind:${left} ahead:${right}"
+      fi
+    fi
+    if [[ "$path" == "$current" ]]; then printf '* '; else printf '  '; fi
+    printf '%-24s %-10s %-13s %s\n' "$branch" "$dirty" "$sync" "$path"
+  done
+}
+cmd_pr() {
+  need gh
+  local id=${1-} branch num
+  if [[ -z "$id" ]]; then
+    id=$(gh pr list --json number,title --jq '.[] | "\(.number) \(.title)"' | sed 's/ .*//' | while IFS= read -r line; do [[ -z "$line" ]] || printf '%s\n' "$line"; done)
+    local opts=() line
+    while IFS= read -r line; do [[ -z "$line" ]] || opts+=("$line"); done <<< "$id"
+    id=$(choose PR "${opts[@]}")
+  fi
+  branch=$(gh pr view "$id" --json headRefName --jq .headRefName)
+  [[ -n "$branch" ]] || fail 'cannot determine PR branch'
+  if ! git show-ref --quiet "refs/heads/$branch" && ! git show-ref --quiet "refs/remotes/origin/$branch"; then
+    num=$(gh pr view "$id" --json number --jq .number)
+    git fetch origin "pull/$num/head:refs/heads/$branch" >&2
+  fi
+  cmd_checkout "$branch"
+}
+cmd_mr() {
+  need glab; need jq
+  local id=${1-} branch number
+  [[ -n "$id" ]] || fail 'usage: wt mr NUMBER|URL (interactive MR listing not yet supported)'
+  branch=$(glab mr view "$id" --output json | jq -r '.source_branch // empty')
+  [[ -n "$branch" ]] || fail 'cannot determine MR branch'
+  if ! git show-ref --quiet "refs/heads/$branch" && ! git show-ref --quiet "refs/remotes/origin/$branch"; then
+    number=$(glab mr view "$id" --output json | jq -r '.iid // empty')
+    [[ -n "$number" ]] || fail 'cannot determine MR ID'
+    git fetch origin "refs/merge-requests/$number/head:refs/heads/$branch" >&2
+  fi
+  cmd_checkout "$branch"
+}
+cmd_clone() {
+  local input=${1-} dest=${2-} url name owner host branch pattern root
+  [[ -n "$input" ]] || fail 'usage: wt clone REPO [DESTINATION]'
+  if [[ "$input" != *:* && "$input" != http* && "$input" != /* && "$input" == */* ]]; then
+    url="https://github.com/$input.git"
+  else url=$input; fi
+  name=${input##*/}; name=${name%.git}; owner=${input%/*}; owner=${owner##*/}; owner=${owner##*:}; host=github.com
+  if [[ "$url" == http* ]]; then
+    host=${url#*://}; host=${host%%/*}
+  elif [[ "$url" == *:* ]]; then host=${url%%:*}; host=${host##*@}; fi
+  branch=$(git ls-remote --symref "$url" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$|\1|p' | head -1)
+  branch=${branch:-main}
+  if [[ -z "$dest" ]]; then
+    root=$(expand_home "$(config repoRoot '~/dev/repos')")
+    pattern=$(config repoPattern '{.repoRoot}/{.repo.Host}/{.repo.Owner}/{.repo.Name}/{.branch}')
+    pattern=${pattern//\{.repoRoot\}/$root}; pattern=${pattern//\{.repo.Host\}/$host}
+    pattern=${pattern//\{.repo.Owner\}/$owner}; pattern=${pattern//\{.repo.Name\}/$name}
+    pattern=${pattern//\{.branch\}/$branch}
+    dest=$(expand_home "$pattern")
+  else dest=$(expand_home "$dest"); fi
+  [[ "$dest" == /* ]] || fail 'clone destination must be absolute'
+  [[ "$dest" != *'/../'* ]] || fail 'clone destination cannot contain ..'
+  mkdir -p "$(dirname "$dest")"
+  git clone "$url" "$dest" >&2
+  print_location "$dest"
+}
+cmd_cleanup() {
+  local stale=0 days=30 line branch i stamp now path
+  for line in "$@"; do
+    case "$line" in --stale) stale=1;; --stale-days=*) days=${line#*=};; *) fail "unknown cleanup option: $line";; esac
+  done
+  [[ "$stale" == 1 ]] || fail 'usage: wt cleanup --stale [--stale-days=N]'
+  [[ "$days" =~ ^[0-9]+$ ]] || fail 'stale days must be a number'
+  now=$(date +%s)
+  load_worktrees
+  for ((i=1;i<${#WT_PATHS[@]};i++)); do
+    branch=${WT_BRANCHES[$i]}; path=${WT_PATHS[$i]}
+    [[ "$branch" != '(detached)' ]] || continue
+    stamp=$(git -C "$path" log -1 --format=%ct 2>/dev/null || :)
+    [[ "$stamp" =~ ^[0-9]+$ ]] || continue
+    if (( now-stamp > days*86400 )); then printf 'inactive: %s (%s)\n' "$branch" "$path"; fi
+    if [[ "$(git for-each-ref --format='%(upstream:track)' "refs/heads/$branch")" == *'[gone]'* ]]; then
+      printf 'upstream gone: %s (%s)\n' "$branch" "$path"
+    fi
+  done
+}
+cmd_migrate() {
+  local dry=0 arg branch path target i
+  for arg in "$@"; do case "$arg" in --dry-run) dry=1;; *) fail "unknown migrate option: $arg";; esac; done
+  load_worktrees
+  for ((i=1;i<${#WT_PATHS[@]};i++)); do
+    branch=${WT_BRANCHES[$i]}; path=${WT_PATHS[$i]}
+    [[ "$branch" != '(detached)' ]] || continue
+    target=$(worktree_path "$branch")
+    [[ "$target" != "$path" ]] || continue
+    if [[ "$dry" == 1 ]]; then printf '%s -> %s\n' "$path" "$target"
+    else
+      [[ ! -e "$target" ]] || fail "target exists: $target"
+      mkdir -p "$(dirname "$target")"
+      git worktree move "$path" "$target" >&2
+      warn "moved $path -> $target"
+    fi
+  done
+}
+usage() {
+  cat <<'HELP'
+wt - Git worktree helper (Bash, with Bash/Zsh shell integration)
+
+  wt config [--global|--local]   Interactive configuration wizard
+  wt config show|set|unset|    Inspect or modify Git configuration
+            get KEY [VALUE]
+  wt clone REPO [DEST]          Clone into configured directory
+  wt create BRANCH [BASE]      Create a branch and worktree
+  wt co [BRANCH]               Check out existing branch into a worktree
+  wt cd [BRANCH] | wt sw        Find existing worktree (shell wrapper also cd's)
+  wt ls                         List worktrees
+  wt status                     Show status and ahead/behind counts
+  wt rm [BRANCH]                Remove clean worktree, preserve branch
+  wt pr [NUMBER|URL]           Worktree for a GitHub PR (requires gh)
+  wt mr NUMBER|URL             Worktree for a GitLab MR (requires glab, jq)
+  wt copy [BRANCH]             Copy configured ignored/untracked files
+  wt migrate [--dry-run]       Move linked worktrees to configured layout
+  wt cleanup --stale           List potentially stale worktrees
+  wt prune                     Run git worktree prune
+  wt info                      Show path strategy and configuration
+
+Global --print-path returns only the destination for shell integration.
+Global --no-copy skips file materialization for co/create/pr/mr.
+Source shell/wt.bash or shell/wt.zsh for automatic navigation.
+HELP
+}
+SCOPE=--global
+wizard_prompt() {
+  local label=$1 default=$2 result
+  printf '%s (default: %s): ' "$label" "$default" >&2
+  IFS= read -r result || fail 'input ended before configuration completed'
+  result=$(trim "$result")
+  printf '%s' "${result:-$default}"
+}
+wizard_strategy() {
+  local def=$1 answer
+  cat >&2 <<'ST'
+Strategies:
+  global            Global (~/.worktrees/repo/feature)
+  sibling-repo      Siblings (~/dev/repo-feature)
+  parent-branches   Branch siblings (~/dev/feature)
+  parent-worktrees  Repo worktrees (~/dev/repo.worktrees/feature)
+  parent-dotdir     Parent .worktrees (~/dev/.worktrees/feature)
+  inside-dotdir     Inside .worktrees (~/dev/repo/.worktrees/feature)
+  custom            Custom path template
+ST
+  while true; do
+    answer=$(wizard_prompt 'Choose strategy' "$def")
+    case "$answer" in global|sibling-repo|parent-branches|parent-worktrees|parent-dotdir|inside-dotdir|custom) printf '%s' "$answer"; return;; esac
+    warn "invalid strategy: $answer"
+  done
+}
+wizard_path() {
+  local default=$1 label=$2 answer
+  while true; do
+    answer=$(wizard_prompt "$label" "$default")
+    case "$answer" in /*|'~'|'~/'*) printf '%s' "$answer"; return;; esac
+    warn 'enter an absolute path or ~/...'
+  done
+}
+wizard_list() {
+  local key=$1 label=$2 values=() item existing='' answer
+  while IFS= read -r item; do [[ -z "$item" ]] || values+=("$item"); done < <(config_scope --get-all "wt.$key" 2>/dev/null || :)
+  local i
+  for ((i=0;i<${#values[@]};i++)); do
+    [[ -z "$existing" ]] && existing=${values[$i]} || existing+=" , ${values[$i]}"
+  done
+  answer=$(wizard_prompt "$label (comma-separated, - to clear)" "${existing:-none}")
+  [[ "$answer" != none ]] || return 0
+  [[ "$answer" != "$existing" ]] || return 0
+  config_scope --unset-all "wt.$key" 2>/dev/null || :
+  [[ "$answer" == - ]] && return 0
+  local -a pieces=()
+  IFS=',' read -r -a pieces <<< "$answer"
+  for item in "${pieces[@]}"; do item=$(trim "$item"); [[ -z "$item" ]] || config_scope --add "wt.$key" "$item"; done
+}
+cmd_config() {
+  local action=${1-} key value root strategy separator clone_root repo_pattern pattern copy_ignored
+  case "$action" in --local|--global) SCOPE=$action; shift; action=${1-};; esac
+  if [[ "$action" == show || "$action" == get || "$action" == set || "$action" == unset ]]; then
+    shift
+    case "${1-}" in --local|--global) SCOPE=$1; shift;; esac
+    case "$action" in
+      show) git config "$SCOPE" --get-regexp '^wt\.' 2>/dev/null || : ;;
+      get) [[ $# -ge 1 ]] || fail 'usage: wt config get KEY'; config_scope --get "wt.${1#wt.}" ;;
+      set) [[ $# -ge 2 ]] || fail 'usage: wt config set KEY VALUE'; config_scope --replace-all "wt.${1#wt.}" "$2" ;;
+      unset) [[ $# -ge 1 ]] || fail 'usage: wt config unset KEY'; config_scope --unset-all "wt.${1#wt.}" ;;
+    esac
+    return
+  fi
+  [[ -z "$action" ]] || fail "unknown config action: $action"
+  [[ "$SCOPE" != --local ]] || git rev-parse --git-dir >/dev/null 2>&1 || fail '--local requires a Git repository'
+  printf '\nConfigure wt (%s Git configuration). Empty/whitespace uses the default.\n\n' "${SCOPE#--}" >&2
+  root=$(wizard_path "$(config_scope --get wt.root 2>/dev/null || printf '~/.worktrees')" 'Root path')
+  strategy=$(wizard_strategy "$(config_scope --get wt.strategy 2>/dev/null || printf global)")
+  pattern=''
+  if [[ "$strategy" == custom ]]; then
+    pattern=$(wizard_prompt 'Worktree path pattern' "$(config_scope --get wt.pattern 2>/dev/null || printf '{.worktreeRoot}/{.repo.Name}/{.branch}')")
+  fi
+  while true; do
+    separator=$(wizard_prompt 'Branch separator (/, -, _)' "$(config_scope --get wt.separator 2>/dev/null || printf /)")
+    case "$separator" in /|-|_) break;; esac
+    warn 'separator must be /, -, or _'
+  done
+  clone_root=$(wizard_path "$(config_scope --get wt.repoRoot 2>/dev/null || printf '~/dev/repos')" 'Clone root path')
+  repo_pattern=$(wizard_prompt 'Clone path pattern' "$(config_scope --get wt.repoPattern 2>/dev/null || printf '{.repoRoot}/{.repo.Host}/{.repo.Owner}/{.repo.Name}/{.branch}')")
+  copy_ignored=$(wizard_prompt 'Copy all ignored files? (true/false)' "$(config_scope --get wt.copyIgnored 2>/dev/null || printf false)")
+  case "$copy_ignored" in true|false) :;; *) fail 'copyIgnored must be true or false (no settings saved)' ;; esac
+  config_scope --replace-all wt.root "$root"
+  config_scope --replace-all wt.strategy "$strategy"
+  if [[ "$strategy" == custom ]]; then config_scope --replace-all wt.pattern "$pattern"
+  else config_scope --unset-all wt.pattern 2>/dev/null || :; fi
+  config_scope --replace-all wt.separator "$separator"
+  config_scope --replace-all wt.repoRoot "$clone_root"
+  config_scope --replace-all wt.repoPattern "$repo_pattern"
+  config_scope --replace-all wt.copyIgnored "$copy_ignored"
+  wizard_list copy 'Files to copy'
+  wizard_list link 'Files to symlink'
+  wizard_list exclude 'Excluded files'
+  printf '\nSaved configuration:\n' >&2
+  git config "$SCOPE" --get-regexp '^wt\.' || :
+}
+cmd_info() {
+  printf 'root: %s\nstrategy: %s\nseparator: %s\npattern: %s\nclone root: %s\nclone pattern: %s\n' \
+    "$(config root '~/.worktrees')" "$(config strategy global)" "$(config separator /)" "$(config pattern '(strategy default)')" \
+    "$(config repoRoot '~/dev/repos')" "$(config repoPattern '{.repoRoot}/{.repo.Host}/{.repo.Owner}/{.repo.Name}/{.branch}')"
+}
+PRINT_PATH=0; NO_COPY=0
+while (($#)); do
+  case "$1" in
+    --print-path) PRINT_PATH=1; shift;;
+    --no-copy) NO_COPY=1; shift;;
+    --help|-h|help) usage; exit 0;;
+    *) break;;
+  esac
+done
+cmd=${1:-help}; (($#==0)) || shift
+case "$cmd" in
+  help) usage;;
+  config) cmd_config "$@";;
+  info) cmd_info;;
+  create) cmd_create "$@";;
+  co|checkout) cmd_checkout "$@";;
+  cd|sw|switch) cmd_cd "$@";;
+  ls|list) cmd_list;;
+  status) cmd_status;;
+  rm|remove) cmd_rm "$@";;
+  pr) cmd_pr "$@";;
+  mr) cmd_mr "$@";;
+  clone) cmd_clone "$@";;
+  copy) target=${1-}; [[ -n "$target" ]] && target=$(find_worktree "$target") || target=$(git rev-parse --show-toplevel); copy_files "$target";;
+  cleanup) cmd_cleanup "$@";;
+  migrate) cmd_migrate "$@";;
+  prune) git worktree prune "$@";;
+  version) printf 'wt shell 0.1.0\n';;
+  *) fail "unknown command: $cmd (see wt --help)";;
+esac
