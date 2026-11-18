@@ -127,7 +127,9 @@ and
 can refer to the same worktree. If a name matches multiple worktrees, the
 operation fails without removing anything; supply the absolute path to
 disambiguate. Git refuses to remove worktrees with uncommitted changes by
-default. With no argument, select a worktree interactively.
+default. With no argument, select a worktree interactively. Bash and Zsh
+completion, when the relevant shell wrapper is sourced, offers both branch
+names and worktree directory names for this command.
 .B wt remove
 is an alias.
 .TP
