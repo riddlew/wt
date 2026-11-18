@@ -60,7 +60,7 @@ wt prune                  Git maintenance
 wt info                   Show effective path settings
 ```
 
-`wt rm` accepts a branch (`fix/do-thing`), a worktree folder name (`fix-do-thing`), or an absolute worktree path. If a name matches multiple worktrees, it refuses to remove anything; use the full path to disambiguate.
+`wt rm` accepts a branch (`fix/do-thing`), a worktree folder name (`fix-do-thing`), or an absolute worktree path. If a name matches multiple worktrees, it refuses to remove anything; use the full path to disambiguate. Bash and Zsh tab completion offers both branch names and worktree folder names for `wt rm` / `wt remove` (for example, typing `wt rm fix` offers `fix/do-thing` and `fix-do-thing`). Source the shell integration script and start a new shell to enable it.
 
 Without arguments, `co`, `cd`, and `rm` use `fzf` if installed, or a numbered prompt. `pr` uses the GitHub CLI for listing/metadata. For generated paths, the script supports the same seven strategy names as the original project.
 
