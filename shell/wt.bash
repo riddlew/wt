@@ -1,7 +1,7 @@
 # Source this file from ~/.bashrc (after placing wt on PATH).
 wt() {
   case "${1-}" in
-    cd|sw|co|checkout|create|clone|pr|mr)
+    cd|sw|switch|co|checkout|create|clone|pr|mr)
       local destination
       destination=$(command wt --print-path "$@") || return $?
       [[ -n "$destination" ]] && builtin cd -- "$destination"
@@ -9,8 +9,8 @@ wt() {
     *) command wt "$@" ;;
   esac
 }
-# Complete checked-out branch names and worktree directory names for removal.
-_wt_remove_candidates() {
+# Complete checked-out branch names and worktree directory names.
+_wt_worktree_candidates() {
   local line path
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
@@ -25,18 +25,17 @@ _wt_remove_candidates() {
 _wt_complete() {
   local cmd="${COMP_WORDS[1]-}" cur="${COMP_WORDS[COMP_CWORD]-}" opts
   if (( COMP_CWORD == 1 )); then
-    opts='config clone create co cd sw ls status rm remove pr mr copy migrate cleanup prune info version help'
+    opts='config clone create co cd sw switch ls status rm remove pr mr copy migrate cleanup prune info version help'
   else
     case "$cmd" in
-      co|create) opts="$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)" ;;
-      rm|remove)
+      co|checkout|create) opts="$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)" ;;
+      rm|remove|cd|sw|switch|copy)
         local candidate
         COMPREPLY=()
         while IFS= read -r candidate; do
           [[ "$candidate" == "$cur"* ]] && COMPREPLY+=("$candidate")
-        done < <(_wt_remove_candidates)
+        done < <(_wt_worktree_candidates)
         return 0 ;;
-      cd|sw|switch|copy) opts="$(command git worktree list --porcelain 2>/dev/null | sed -n 's|^branch refs/heads/||p')" ;;
       config) opts='show get set unset --global --local' ;;
       *) opts='';;
     esac
