@@ -6,6 +6,17 @@ wt() {
       destination=$(command wt --print-path "$@") || return $?
       [[ -n "$destination" ]] && builtin cd -- "$destination"
       ;;
+    rename)
+      local previous_root previous_pwd destination
+      previous_root=$(command git rev-parse --show-toplevel 2>/dev/null || :)
+      previous_pwd=$PWD
+      destination=$(command wt --print-path "$@") || return $?
+      if [[ -n "$previous_root" && ! -d "$previous_root" && "$previous_pwd" == "$previous_root"* ]]; then
+        builtin cd -- "$destination${previous_pwd#"$previous_root"}"
+      else
+        printf '%s\n' "$destination"
+      fi
+      ;;
     *) command wt "$@" ;;
   esac
 }
@@ -25,13 +36,14 @@ _wt_worktree_candidates() {
 _wt_complete() {
   local cmd="${COMP_WORDS[1]-}" cur="${COMP_WORDS[COMP_CWORD]-}" opts
   if (( COMP_CWORD == 1 )); then
-    opts='config clone create co cd sw switch ls status rm remove pr mr copy migrate cleanup prune info version help'
+    opts='config clone create co cd sw switch ls status rm remove pr mr copy migrate cleanup prune rename info version help'
   else
     case "$cmd" in
       co|checkout|create) opts="$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)" ;;
-      rm|remove|cd|sw|switch|copy)
-        local candidate
+      rm|remove|cd|sw|switch|copy|rename)
         COMPREPLY=()
+        (( COMP_CWORD == 2 )) || return 0
+        local candidate
         while IFS= read -r candidate; do
           [[ "$candidate" == "$cur"* ]] && COMPREPLY+=("$candidate")
         done < <(_wt_worktree_candidates)
