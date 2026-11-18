@@ -6,23 +6,29 @@ A Git worktree helper built with **Bash** and small **Bash/Zsh** shell integrati
 
 ## Install
 
-```bash
-mkdir -p ~/.local/bin
-install -m 755 wt ~/.local/bin/wt
-# Add ~/.local/bin to PATH if not already present.
-```
-
-For automatic directory navigation, add one of these lines to your login shell configuration, replacing `/path/to/wt` with your checkout:
+Run the configurable installer from the cloned repository:
 
 ```bash
-# ~/.bashrc
-source /path/to/wt/shell/wt.bash
-
-# ~/.zshrc (instead)
-source /path/to/wt/shell/wt.zsh
+./install.sh
 ```
 
-Without shell integration, the commands work but cannot change the calling shell's working directory; `wt cd` prints the destination.
+Edit the variables at the top of `install.sh`, or override them with environment variables:
+
+```bash
+BIN_DIR="$HOME/.local/bin/wt" \
+BASH_COMPL_DIR="$HOME/.local/share/bash-completion/completions" \
+ZSH_COMPL_DIR="$HOME/.local/share/zsh-completion/completions" \
+MAN_DIR="$HOME/.local/share/man/man1" \
+./install.sh
+```
+
+The installer creates the destination directories, installs the executable as mode 755, and copies the Bash and Zsh shell integration files and manual page as mode 644. It adds a quoted `source` line to `~/.bashrc` and `~/.zshrc` if the exact line is not already present. Both shell startup file paths are configurable using `BASH_RC` and `ZSH_RC`. Re-running the installer updates the installed files without duplicating its startup lines. Restart your shell to activate integration.
+
+`BIN_DIR` is the **full filename** (for example `~/.local/bin/wt`), while the completion and manual settings are directories. If `~/.local/bin` is not on your `PATH`, add it to your shell configuration. If `man wt` cannot find the page, configure `MANPATH` or open it directly with `man -l man/wt.1`.
+
+The completion destinations are for sourcing the shell integration scripts, not automatic discovery by completion managers. The installer sources both scripts explicitly because they also provide the `wt` function for automatic directory navigation.
+
+Without shell integration, the commands still work but cannot change the calling shell's working directory; `wt cd` prints the destination.
 
 ## Manual page
 
