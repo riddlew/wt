@@ -45,7 +45,7 @@ _wt_complete
 [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == 'fix folder with spaces' ]]
 
 # Existing-worktree commands complete both checked-out branches and folder names.
-for action in cd sw switch copy rm remove; do
+for action in cd sw switch copy rm remove rename; do
   COMP_WORDS=(wt "$action" fix)
   _wt_complete
   [[ " ${COMPREPLY[*]} " == *' fix/do-thing '* ]]
@@ -64,6 +64,12 @@ COMP_WORDS=(wt co fix)
 _wt_complete
 [[ " ${COMPREPLY[*]} " == *' fix/not-checked-out '* ]]
 [[ " ${COMPREPLY[*]} " != *' fix-special-folder '* ]]
+
+# The second rename argument is a new branch name, not an existing-worktree lookup.
+COMP_WORDS=(wt rename fix/do-thing new)
+COMP_CWORD=3
+_wt_complete
+[[ ${#COMPREPLY[@]} -eq 0 ]]
 
 if command -v zsh >/dev/null 2>&1; then
   out=$(zsh -fc "source '$ROOT/shell/wt.zsh'; _wt_worktree_candidates")
