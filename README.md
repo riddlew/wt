@@ -110,6 +110,7 @@ wt sw                     Alias for wt cd
 wt ls                     List worktrees
 wt status                 Dirty state and upstream ahead/behind for each worktree
 wt rm [BRANCH|NAME|PATH]  Remove worktree (Git refuses dirty worktrees)
+wt rename [OLD] NEW        Rename a checked-out branch and its worktree directory
 wt pr [NUMBER|URL]        GitHub pull request (requires gh)
 wt mr NUMBER|URL          GitLab merge request (requires glab and jq)
 wt copy [BRANCH|NAME|PATH] Copy configured untracked/ignored files
@@ -120,6 +121,23 @@ wt info                   Show effective path settings
 ```
 
 `wt cd`, `wt sw`, `wt switch`, `wt copy`, and `wt rm` (also `wt remove`) accept a checked-out branch (`fix/do-thing`), worktree folder (`fix-do-thing`), or absolute path. Their Bash/Zsh tab completion suggests both branch and folder names for registered worktrees. For example, `wt cd fix<Tab>` can suggest `fix/do-thing` and `fix-do-thing`. Ambiguous names are rejected; use the full path. `wt co`/`wt checkout` continue to complete Git branch names, including branches without a worktree. Source the shell integration and restart your shell to enable updated completion.
+
+### Renaming an existing worktree
+
+Use `wt rename` to change the Git branch name **and** relocate its linked worktree to the directory dictated by your configured layout (including `wt.separator` and `wt.pattern`):
+
+```bash
+wt rename fix/do-thing fix/other-thing
+wt rename fix-do-thing fix/other-thing  # Existing worktree directory as OLD
+```
+
+From inside the worktree being renamed, you can omit `OLD`:
+
+```bash
+wt rename fix/other-thing
+```
+
+If the Bash or Zsh integration is sourced, the shell follows the relocated worktree when you rename the one you are currently inside. Tab completion suggests existing worktree branches and directory names for `OLD`. The command preserves uncommitted changes, does not push or rename a remote branch, and does not automatically update upstream tracking settings. It refuses to rename the primary checkout, detached worktrees, or branches whose new name or target directory already exists. It attempts to restore the previous directory if Git cannot complete the branch rename; cross-device worktree moves remain subject to Git's filesystem restrictions.
 
 Without arguments, `co`, `cd`, and `rm` use `fzf` if installed, or a numbered prompt. `pr` uses the GitHub CLI for listing/metadata. For generated paths, the script supports the same seven strategy names as the original project.
 
@@ -151,6 +169,9 @@ git config --global --add wt.copy .env
 ```bash
 bash tests/test.sh
 bash tests/safety.sh
+bash tests/completion.sh
+bash tests/rename.sh
+bash tests/install.sh
 ```
 
 ## License
