@@ -117,11 +117,17 @@ is an alias.
 Show clean/dirty status and available upstream ahead/behind counts for
 each worktree.
 .TP
-.BI "wt rm " [ branch ]
-Remove a non-primary worktree while retaining its Git branch. Git refuses
-to remove worktrees with uncommitted changes by default. With no
-.IR branch ,
-select a worktree interactively.
+.BI "wt rm " [ branch | name | path ]
+Remove a non-primary worktree while retaining its Git branch. The argument
+can be an exact branch name, the final worktree directory name, or its
+absolute path. For example, both
+.B "wt rm fix/do-thing"
+and
+.B "wt rm fix-do-thing"
+can refer to the same worktree. If a name matches multiple worktrees, the
+operation fails without removing anything; supply the absolute path to
+disambiguate. Git refuses to remove worktrees with uncommitted changes by
+default. With no argument, select a worktree interactively.
 .B wt remove
 is an alias.
 .TP
