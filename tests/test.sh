@@ -44,6 +44,31 @@ printf 'dirty\n' > "$path/untracked.txt"
 if "$ROOT/wt" rm feat/with-slash >/dev/null 2>&1; then echo 'ERROR: removed dirty worktree' >&2; exit 1; fi
 rm "$path/untracked.txt"
 "$ROOT/wt" rm feat/with-slash
+# Remove by actual worktree directory name, not only the branch name.
+git config --global wt.strategy global
+git config --global wt.root "$TEMP/named-worktrees"
+"$ROOT/wt" create fix/do-thing > "$TEMP/path"
+path=$(cat "$TEMP/path")
+[[ "${path##*/}" == fix-do-thing ]]
+"$ROOT/wt" rm fix-do-thing
+[[ ! -e "$path" ]]
+"$ROOT/wt" co fix/do-thing > "$TEMP/path"
+path=$(cat "$TEMP/path")
+"$ROOT/wt" rm fix/do-thing
+[[ ! -e "$path" ]]
+# If a branch name is also another worktree's directory name,
+# refuse to guess which worktree the user intended to remove.
+"$ROOT/wt" co fix/do-thing > "$TEMP/path"
+path=$(cat "$TEMP/path")
+git worktree add -q -b fix-do-thing "$TEMP/other-branch" main
+if "$ROOT/wt" rm fix-do-thing > "$TEMP/ambiguous.stdout" 2> "$TEMP/ambiguous.stderr"; then
+  echo 'ERROR: ambiguous worktree name was accepted' >&2; exit 1
+fi
+grep -q 'ambiguous worktree' "$TEMP/ambiguous.stderr"
+[[ -d "$path" && -d "$TEMP/other-branch" ]]
+"$ROOT/wt" rm "$path"
+"$ROOT/wt" rm fix-do-thing
+[[ ! -e "$path" && ! -e "$TEMP/other-branch" ]]
 # Preserve spaces in worktree root.
 git config --global wt.strategy global
 git config --global wt.root "$TEMP/root with spaces"
