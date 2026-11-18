@@ -156,15 +156,25 @@ strategy and pattern. With
 print the planned moves without modifying the filesystem.
 .TP
 .BI "wt cleanup \-\-stale " [ \-\-stale\-days=N ]
-Report worktrees whose last commit is older than
+Report potentially unused linked worktrees, but do not remove anything.
+A worktree is reported when its latest commit is older than
 .I N
-days (default 30) or whose upstream is gone. This command reports
-candidates; it does not delete worktrees.
+days (default 30), or when its configured upstream branch is marked
+gone. This is a heuristic based on commit timestamps and upstream state,
+not the last time the worktree was opened, edited, or used. Review the
+results before removing anything with
+.BR "wt rm" .
 .TP
 .BI "wt prune " [ git-worktree-prune-options ]
-Pass arguments to
+Run
 .B git worktree prune
-to remove obsolete administrative metadata.
+to delete obsolete Git administrative registrations for worktree
+directories that are already missing. This does not delete existing
+worktree directories or branches. It obeys Git's pruning expiration rules;
+passing
+.B \-\-expire now
+requests immediate pruning of eligible stale registrations.
+The arguments are passed directly to Git.
 .TP
 .B wt info
 Show the effective root, strategy, separator, path pattern, clone root,
@@ -372,6 +382,59 @@ wt migrate --dry-run
 wt cleanup --stale --stale-days=14
 .RE
 .fi
+.SH WORKTREE MAINTENANCE
+These commands serve different purposes and should not be confused.
+.SS "Find potentially unused worktrees: wt cleanup"
+Use this when you want to review linked worktrees you may no longer need.
+For example:
+.PP
+.nf
+.RS
+wt cleanup --stale
+wt cleanup --stale --stale-days=7
+.RE
+.fi
+.PP
+The output is a report only. It does not remove worktree directories,
+branches, or Git registrations. An old commit is not proof of inactivity:
+uncommitted edits and continued use do not change its timestamp. A gone
+upstream indicates that Git considers the tracked remote reference
+missing; verify your remote tracking references are current before acting.
+Use
+.BI "wt rm " branch
+(or a worktree directory name or absolute path) to remove a worktree
+you have reviewed.
+.SS "Remove records for missing worktrees: wt prune"
+Use this after deleting a worktree directory outside Git (for example,
+with
+.BR rm )
+when Git still lists it as a registered worktree. For example:
+.PP
+.nf
+.RS
+wt prune --dry-run --verbose
+wt prune
+wt prune --expire now
+.RE
+.fi
+.PP
+The first command previews what Git would prune; the last requests
+immediate pruning of eligible missing-worktree records rather than
+waiting for Git's normal expiration period. Git's prune operation
+does not delete worktree directories that still exist and does not
+delete branches.
+.PP
+.B Caution:
+A worktree on an unmounted removable drive or network filesystem
+may appear to be missing. Use
+.B git worktree lock
+to protect intentionally unavailable worktrees from pruning.
+.SS "Remove an existing worktree: wt rm"
+To remove an existing worktree and retain its branch, run
+.BI "wt rm " branch
+(or use its directory name or absolute path).
+Git normally refuses to remove worktrees with uncommitted changes.
+.PP
 .SH SAFETY AND LIMITATIONS
 .B wt
 rejects numerous unsafe destination paths, including Git metadata,
