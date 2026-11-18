@@ -44,8 +44,29 @@ COMP_WORDS=(wt rm 'fix folder')
 _wt_complete
 [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == 'fix folder with spaces' ]]
 
+# Existing-worktree commands complete both checked-out branches and folder names.
+for action in cd sw switch copy rm remove; do
+  COMP_WORDS=(wt "$action" fix)
+  _wt_complete
+  [[ " ${COMPREPLY[*]} " == *' fix/do-thing '* ]]
+  [[ " ${COMPREPLY[*]} " == *' fix-do-thing '* ]]
+  [[ " ${COMPREPLY[*]} " == *' fix-special-folder '* ]]
+  [[ " ${COMPREPLY[*]} " != *' fix/not-checked-out '* ]]
+  COMP_WORDS=(wt "$action" fix/)
+  _wt_complete
+  [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == fix/do-thing ]]
+  COMP_WORDS=(wt "$action" 'fix folder')
+  _wt_complete
+  [[ ${#COMPREPLY[@]} -eq 1 && ${COMPREPLY[0]} == 'fix folder with spaces' ]]
+done
+# Checkout still completes branches, including ones without an existing worktree.
+COMP_WORDS=(wt co fix)
+_wt_complete
+[[ " ${COMPREPLY[*]} " == *' fix/not-checked-out '* ]]
+[[ " ${COMPREPLY[*]} " != *' fix-special-folder '* ]]
+
 if command -v zsh >/dev/null 2>&1; then
-  out=$(zsh -fc "source '$ROOT/shell/wt.zsh'; _wt_remove_candidates")
+  out=$(zsh -fc "source '$ROOT/shell/wt.zsh'; _wt_worktree_candidates")
   [[ "$out" == *'fix/do-thing'* && "$out" == *'fix-do-thing'* ]]
 fi
 echo 'completion tests passed'
