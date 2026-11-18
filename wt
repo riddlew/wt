@@ -256,6 +256,30 @@ find_worktree() {
   done
   return 1
 }
+# Removal accepts an exact branch, an absolute worktree path, or the
+# final directory name (even when the configured branch separator differs).
+# Refuse ambiguous names rather than deleting a different worktree.
+find_worktree_for_remove() {
+  local query=$1 i path branch name found=''
+  local matches=()
+  load_worktrees
+  for ((i=0;i<${#WT_PATHS[@]};i++)); do
+    path=${WT_PATHS[$i]}; branch=${WT_BRANCHES[$i]}; name=${path##*/}
+    if [[ "$query" == "$branch" || "$query" == "$path" || "$query" == "$name" ]]; then
+      found=$path
+      matches+=("$branch ($path)")
+    fi
+  done
+  if ((${#matches[@]}==0)); then
+    fail "no worktree for $query"
+  fi
+  if ((${#matches[@]}>1)); then
+    warn "ambiguous worktree '$query'; use its full path:"
+    printf '  %s\n' "${matches[@]}" >&2
+    return 1
+  fi
+  printf '%s' "$found"
+}
 choose() {
   local prompt=$1 line answer i=0
   shift
@@ -433,8 +457,12 @@ cmd_list() {
 }
 cmd_rm() {
   local branch=${1-} path primary
-  [[ -n "$branch" ]] || branch=$(select_worktree)
-  path=$(find_worktree "$branch") || fail "no worktree for $branch"
+  if [[ -z "$branch" ]]; then
+    branch=$(select_worktree)
+    path=$(find_worktree "$branch") || fail "no worktree for $branch"
+  else
+    path=$(find_worktree_for_remove "$branch") || return $?
+  fi
   primary=$(main_dir)
   [[ "$path" != "$primary" ]] || fail 'cannot remove the primary worktree'
   git worktree remove "$path"
@@ -588,7 +616,7 @@ wt - Git worktree helper (Bash, with Bash/Zsh shell integration)
   wt cd [BRANCH] | wt sw        Find existing worktree (shell wrapper also cd's)
   wt ls                         List worktrees
   wt status                     Show status and ahead/behind counts
-  wt rm [BRANCH]                Remove clean worktree, preserve branch
+  wt rm [BRANCH|NAME|PATH]      Remove clean worktree, preserve branch
   wt pr [NUMBER|URL]           Worktree for a GitHub PR (requires gh)
   wt mr NUMBER|URL             Worktree for a GitLab MR (requires glab, jq)
   wt copy [BRANCH]             Copy configured ignored/untracked files
