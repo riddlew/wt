@@ -52,21 +52,21 @@ wt config show|get|set|unset Inspect or modify wt.* Git config keys
 wt clone OWNER/REPO [DEST] Clone under configured repo root
 wt create NAME [BASE]     Create new branch/worktree
 wt co [BRANCH]            Check out an existing branch into a worktree
-wt cd [BRANCH]            Switch to an existing worktree (never creates)
+wt cd [BRANCH|NAME|PATH]  Switch to an existing worktree (never creates)
 wt sw                     Alias for wt cd
 wt ls                     List worktrees
 wt status                 Dirty state and upstream ahead/behind for each worktree
 wt rm [BRANCH|NAME|PATH]  Remove worktree (Git refuses dirty worktrees)
 wt pr [NUMBER|URL]        GitHub pull request (requires gh)
 wt mr NUMBER|URL          GitLab merge request (requires glab and jq)
-wt copy [BRANCH]          Copy configured untracked/ignored files
+wt copy [BRANCH|NAME|PATH] Copy configured untracked/ignored files
 wt migrate [--dry-run]    Move nonprimary worktrees to configured layout
 wt cleanup --stale        Report inactive or upstream-gone worktrees
 wt prune                  Git maintenance
 wt info                   Show effective path settings
 ```
 
-`wt rm` accepts a branch (`fix/do-thing`), a worktree folder name (`fix-do-thing`), or an absolute worktree path. If a name matches multiple worktrees, it refuses to remove anything; use the full path to disambiguate. Bash and Zsh tab completion offers both branch names and worktree folder names for `wt rm` / `wt remove` (for example, typing `wt rm fix` offers `fix/do-thing` and `fix-do-thing`). Source the shell integration script and start a new shell to enable it.
+`wt cd`, `wt sw`, `wt switch`, `wt copy`, and `wt rm` (also `wt remove`) accept a checked-out branch (`fix/do-thing`), worktree folder (`fix-do-thing`), or absolute path. Their Bash/Zsh tab completion suggests both branch and folder names for registered worktrees. For example, `wt cd fix<Tab>` can suggest `fix/do-thing` and `fix-do-thing`. Ambiguous names are rejected; use the full path. `wt co`/`wt checkout` continue to complete Git branch names, including branches without a worktree. Source the shell integration and restart your shell to enable updated completion.
 
 Without arguments, `co`, `cd`, and `rm` use `fzf` if installed, or a numbered prompt. `pr` uses the GitHub CLI for listing/metadata. For generated paths, the script supports the same seven strategy names as the original project.
 
