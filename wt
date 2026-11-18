@@ -177,6 +177,7 @@ validate_destination() {
 # fails or the command is interrupted. Existing branches are always preserved.
 TX_ACTIVE=0; TX_PATH=''; TX_BRANCH=''; TX_NEW_BRANCH=0; TX_INITIAL_HEAD=''; TX_ADDED=0
 MIG_ACTIVE=0; MIG_FROM=(); MIG_TO=()
+REN_ACTIVE=0; REN_FROM=''; REN_TO=''; REN_OLD=''; REN_NEW=''; REN_HEAD=''; REN_MOVED=0
 rollback_worktree() {
   local status=$1 line path branch registered=0 current_head
   [[ "$TX_ACTIVE" == 1 && "$status" -ne 0 ]] || return 0
@@ -222,10 +223,40 @@ rollback_migration() {
     fi
   done
 }
+rollback_rename() {
+  local status=$1 head current
+  [[ "$REN_ACTIVE" == 1 && "$status" -ne 0 ]] || return 0
+  REN_ACTIVE=0
+  # A signal may have arrived after Git moved the worktree but before
+  # the shell recorded success. Only act if the old path is absent.
+  if [[ "$REN_MOVED" == 0 && ! -e "$REN_FROM" && -d "$REN_TO" ]]; then
+    REN_MOVED=1
+  fi
+  [[ "$REN_MOVED" == 1 ]] || return 0
+  current=$(git -C "$REN_TO" symbolic-ref --quiet --short HEAD 2>/dev/null || :)
+  if [[ "$current" == "$REN_NEW" ]] && ! git show-ref --verify --quiet "refs/heads/$REN_OLD"; then
+    head=$(git rev-parse "refs/heads/$REN_NEW" 2>/dev/null || :)
+    if [[ "$head" == "$REN_HEAD" ]]; then
+      git branch -m "$REN_NEW" "$REN_OLD" >&2 || warn "rename rollback could not restore branch $REN_OLD"
+    else
+      warn "rename rollback preserved a branch whose commit changed: $REN_NEW"
+    fi
+  fi
+  if [[ ! -e "$REN_FROM" && ! -L "$REN_FROM" ]]; then
+    if git worktree move "$REN_TO" "$REN_FROM" >&2; then
+      warn "rolled back worktree rename: $REN_TO -> $REN_FROM"
+    else
+      warn "rename rollback could not restore $REN_FROM; inspect $REN_TO manually"
+    fi
+  else
+    warn "rename rollback cannot overwrite existing path: $REN_FROM"
+  fi
+}
 on_exit() {
   local status=$1
   rollback_worktree "$status"
   rollback_migration "$status"
+  rollback_rename "$status"
 }
 trap 'on_exit "$?"' EXIT
 trap 'exit 130' INT
@@ -467,6 +498,45 @@ cmd_rm() {
   git worktree remove "$path"
   warn "removed $path (branch retained)"
 }
+cmd_rename() {
+  local old='' new='' path branch primary target current_head
+  case $# in
+    1)
+      new=$1
+      old=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || fail 'specify OLD when not on a branch'
+      ;;
+    2) old=$1; new=$2 ;;
+    *) fail 'usage: wt rename [OLD] NEW' ;;
+  esac
+  [[ -n "$old" && -n "$new" ]] || fail 'usage: wt rename [OLD] NEW'
+  path=$(resolve_worktree "$old") || return $?
+  primary=$(main_dir)
+  [[ "$path" != "$primary" ]] || fail 'cannot rename the primary worktree; use git branch -m instead'
+  [[ -d "$path" && ! -L "$path" ]] || fail "worktree directory missing or symlinked: $path"
+  branch=$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null) || fail 'cannot rename a detached worktree'
+  [[ "$branch" != "$new" ]] || fail "branch is already named $new"
+  git check-ref-format --branch "$new" >/dev/null || fail "invalid branch: $new"
+  git show-ref --verify --quiet "refs/heads/$new" && fail "branch already exists: $new"
+  current_head=$(git rev-parse --verify "refs/heads/$branch^{commit}") || fail "cannot read branch: $branch"
+  target=$(worktree_path "$new")
+  if [[ "$(canonical_path "$target")" == "$(canonical_path "$path")" ]]; then
+    target=$path  # Different branch spellings may map to the same directory.
+  else
+    target=$(validate_destination "$target" worktree)
+  fi
+  REN_ACTIVE=1; REN_FROM=$path; REN_TO=$target; REN_OLD=$branch
+  REN_NEW=$new; REN_HEAD=$current_head; REN_MOVED=0
+  if [[ "$target" != "$path" ]]; then
+    mkdir -p "$(dirname "$target")"
+    [[ "$(validate_destination "$target" worktree)" == "$target" ]] || fail 'rename target changed'
+    git worktree move "$path" "$target" >&2
+    REN_MOVED=1
+  fi
+  git branch -m "$branch" "$new" >&2
+  REN_ACTIVE=0
+  warn "renamed $branch -> $new ($path -> $target)"
+  print_location "$target"
+}
 cmd_status() {
   local i branch path dirty sync current left right counts
   load_worktrees
@@ -616,6 +686,7 @@ wt - Git worktree helper (Bash, with Bash/Zsh shell integration)
   wt ls                         List worktrees
   wt status                     Show status and ahead/behind counts
   wt rm [BRANCH|NAME|PATH]      Remove clean worktree, preserve branch
+  wt rename [OLD] NEW           Rename a branch and move its linked worktree
   wt pr [NUMBER|URL]           Worktree for a GitHub PR (requires gh)
   wt mr NUMBER|URL             Worktree for a GitLab MR (requires glab, jq)
   wt copy [BRANCH|NAME|PATH]   Copy configured ignored/untracked files
@@ -768,6 +839,7 @@ case "$cmd" in
   ls|list) cmd_list;;
   status) cmd_status;;
   rm|remove) cmd_rm "$@";;
+  rename) cmd_rename "$@";;
   pr) cmd_pr "$@";;
   mr) cmd_mr "$@";;
   clone) cmd_clone "$@";;
