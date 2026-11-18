@@ -50,7 +50,7 @@ wt cd [BRANCH]            Switch to an existing worktree (never creates)
 wt sw                     Alias for wt cd
 wt ls                     List worktrees
 wt status                 Dirty state and upstream ahead/behind for each worktree
-wt rm [BRANCH]            Remove worktree (Git refuses dirty worktrees)
+wt rm [BRANCH|NAME|PATH]  Remove worktree (Git refuses dirty worktrees)
 wt pr [NUMBER|URL]        GitHub pull request (requires gh)
 wt mr NUMBER|URL          GitLab merge request (requires glab and jq)
 wt copy [BRANCH]          Copy configured untracked/ignored files
@@ -59,6 +59,8 @@ wt cleanup --stale        Report inactive or upstream-gone worktrees
 wt prune                  Git maintenance
 wt info                   Show effective path settings
 ```
+
+`wt rm` accepts a branch (`fix/do-thing`), a worktree folder name (`fix-do-thing`), or an absolute worktree path. If a name matches multiple worktrees, it refuses to remove anything; use the full path to disambiguate.
 
 Without arguments, `co`, `cd`, and `rm` use `fzf` if installed, or a numbered prompt. `pr` uses the GitHub CLI for listing/metadata. For generated paths, the script supports the same seven strategy names as the original project.
 
