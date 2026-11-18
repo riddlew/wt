@@ -118,6 +118,36 @@ is an alias.
 Show clean/dirty status and available upstream ahead/behind counts for
 each worktree.
 .TP
+.BI "wt rename " [ old ] new
+Rename the local branch checked out in an existing, non-primary worktree
+and move that worktree to the path dictated by the active strategy,
+separator, and path template. The optional
+.I old
+may be an exact branch name, worktree directory name, or absolute path.
+If omitted, rename the branch currently checked out in the calling worktree.
+For example:
+.PP
+.nf
+.RS
+wt rename fix/do-thing fix/other-thing
+wt rename fix-do-thing fix/other-thing
+wt rename fix/other-thing
+.RE
+.fi
+.PP
+The source branch must have an existing linked worktree and must not be
+detached or the primary checkout. The new branch name and destination
+must not already exist. Uncommitted changes are preserved. The command
+does not push or rename a remote branch, and does not automatically
+adjust upstream tracking. If moving the worktree succeeds but renaming
+the branch fails, the command attempts to move it back. This is not an
+atomic transaction. Git's worktree move operation may fail when moving
+across filesystems. With the Bash/Zsh integration sourced, renaming
+the worktree currently in use also changes the calling shell's working
+directory to its new location. Completion suggests registered worktrees
+for
+.IR old .
+.TP
 .BI "wt rm " [ branch | name | path ]
 Remove a non-primary worktree while retaining its Git branch. The argument
 can be an exact branch name, the final worktree directory name, or its
