@@ -621,9 +621,27 @@ wt - Git worktree helper (Bash, with Bash/Zsh shell integration)
   wt mr NUMBER|URL             Worktree for a GitLab MR (requires glab, jq)
   wt copy [BRANCH]             Copy configured ignored/untracked files
   wt migrate [--dry-run]       Move linked worktrees to configured layout
-  wt cleanup --stale           List potentially stale worktrees
-  wt prune                     Run git worktree prune
+  wt cleanup --stale [--stale-days=N]
+                               Report potentially unused linked worktrees
+  wt prune [GIT-PRUNE-OPTIONS]  Prune Git records for missing worktree paths
   wt info                      Show path strategy and configuration
+
+Maintenance:
+  wt cleanup --stale
+    Reports linked worktrees when their latest COMMIT is older than 30 days,
+    or their configured upstream branch is gone. It does NOT measure your
+    last editing time, and does NOT remove worktrees, branches, or Git records.
+    --stale-days=N changes the age threshold (e.g. --stale-days=7).
+    Review the results, then use 'wt rm BRANCH|NAME|PATH' to remove one.
+
+  wt prune
+    Runs 'git worktree prune'. This removes stale Git registrations for
+    worktree directories that are already missing; it does NOT remove existing
+    worktree directories or branches. Git's expiration settings can delay
+    pruning. Use 'wt prune --dry-run --verbose' to preview, or
+    'wt prune --expire now' to prune eligible records immediately.
+    CAUTION: If a worktree is on an unmounted drive, Git may see it as
+    missing. Lock those worktrees with 'git worktree lock' to protect them.
 
 Global --print-path returns only the destination for shell integration.
 Global --no-copy skips file materialization for co/create/pr/mr.
