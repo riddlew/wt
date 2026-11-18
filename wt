@@ -256,10 +256,9 @@ find_worktree() {
   done
   return 1
 }
-# Removal accepts an exact branch, an absolute worktree path, or the
-# final directory name (even when the configured branch separator differs).
-# Refuse ambiguous names rather than deleting a different worktree.
-find_worktree_for_remove() {
+# Resolve existing worktrees by branch, absolute path, or final folder name.
+# Reject ambiguous names rather than choosing a different worktree.
+resolve_worktree() {
   local query=$1 i path branch name found=''
   local matches=()
   load_worktrees
@@ -443,7 +442,7 @@ cmd_checkout() {
 cmd_cd() {
   local branch=${1-} path
   [[ -n "$branch" ]] || branch=$(select_worktree)
-  path=$(find_worktree "$branch") || fail "no worktree for $branch"
+  path=$(resolve_worktree "$branch") || return $?
   print_location "$path"
 }
 cmd_list() {
@@ -461,7 +460,7 @@ cmd_rm() {
     branch=$(select_worktree)
     path=$(find_worktree "$branch") || fail "no worktree for $branch"
   else
-    path=$(find_worktree_for_remove "$branch") || return $?
+    path=$(resolve_worktree "$branch") || return $?
   fi
   primary=$(main_dir)
   [[ "$path" != "$primary" ]] || fail 'cannot remove the primary worktree'
@@ -613,13 +612,13 @@ wt - Git worktree helper (Bash, with Bash/Zsh shell integration)
   wt clone REPO [DEST]          Clone into configured directory
   wt create BRANCH [BASE]      Create a branch and worktree
   wt co [BRANCH]               Check out existing branch into a worktree
-  wt cd [BRANCH] | wt sw        Find existing worktree (shell wrapper also cd's)
+  wt cd [BRANCH|NAME|PATH]     Find existing worktree (shell wrapper also cd's)
   wt ls                         List worktrees
   wt status                     Show status and ahead/behind counts
   wt rm [BRANCH|NAME|PATH]      Remove clean worktree, preserve branch
   wt pr [NUMBER|URL]           Worktree for a GitHub PR (requires gh)
   wt mr NUMBER|URL             Worktree for a GitLab MR (requires glab, jq)
-  wt copy [BRANCH]             Copy configured ignored/untracked files
+  wt copy [BRANCH|NAME|PATH]   Copy configured ignored/untracked files
   wt migrate [--dry-run]       Move linked worktrees to configured layout
   wt cleanup --stale [--stale-days=N]
                                Report potentially unused linked worktrees
@@ -772,7 +771,14 @@ case "$cmd" in
   pr) cmd_pr "$@";;
   mr) cmd_mr "$@";;
   clone) cmd_clone "$@";;
-  copy) target=${1-}; [[ -n "$target" ]] && target=$(find_worktree "$target") || target=$(git rev-parse --show-toplevel); copy_files "$target";;
+  copy)
+    target=${1-}
+    if [[ -n "$target" ]]; then
+      target=$(resolve_worktree "$target") || exit $?
+    else
+      target=$(git rev-parse --show-toplevel) || fail 'run this command inside a worktree'
+    fi
+    copy_files "$target";;
   cleanup) cmd_cleanup "$@";;
   migrate) cmd_migrate "$@";;
   prune) git worktree prune "$@";;
