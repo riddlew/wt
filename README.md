@@ -30,6 +30,59 @@ The completion destinations are for sourcing the shell integration scripts, not 
 
 Without shell integration, the commands still work but cannot change the calling shell's working directory; `wt cd` prints the destination.
 
+## Manual installation (without `install.sh`)
+
+Run the following commands from the root of your cloned `wt` repository. You can change the destination directories to suit your setup.
+
+**1. Install the executable and shell integration scripts:**
+
+```bash
+mkdir -p "$HOME/.local/bin" \
+  "$HOME/.local/share/bash-completion/completions" \
+  "$HOME/.local/share/zsh-completion/completions"
+
+install -m 755 wt "$HOME/.local/bin/wt"
+install -m 644 shell/wt.bash "$HOME/.local/share/bash-completion/completions/wt.bash"
+install -m 644 shell/wt.zsh "$HOME/.local/share/zsh-completion/completions/wt.zsh"
+```
+
+**2. Enable the shell integration and tab completion.** Add the appropriate lines to your shell's startup file, **only if they are not already present**:
+
+For **Bash**, add to `~/.bashrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+source "$HOME/.local/share/bash-completion/completions/wt.bash"
+```
+
+For **Zsh**, add to `~/.zshrc`:
+
+```zsh
+export PATH="$HOME/.local/bin:$PATH"
+autoload -Uz compinit
+compinit
+source "$HOME/.local/share/zsh-completion/completions/wt.zsh"
+```
+
+The `PATH` line is only necessary if `~/.local/bin` is not already on your `PATH`. In Zsh, if your configuration already initializes completion with `compinit` (for example through a framework), do **not** initialize it a second time; simply source `wt.zsh` **after** completion initialization. The Bash and Zsh scripts provide both shell navigation (`wt cd` changes directories) and command/branch/worktree-name tab completion. Merely copying them into a completions directory does not enable these functions: they must be sourced.
+
+**3. Install the manual page:**
+
+```bash
+mkdir -p "$HOME/.local/share/man/man1"
+install -m 644 man/wt.1 "$HOME/.local/share/man/man1/wt.1"
+```
+
+Restart your shell, then verify:
+
+```bash
+command -v wt
+wt --help
+man wt
+```
+
+If `man wt` cannot find the page, check your `MANPATH` or view the repository copy using `man -l man/wt.1`. You can skip the Bash or Zsh installation steps for shells you do not use.
+
 ## Manual page
 
 The repository includes a standard section 1 man page at [`man/wt.1`](man/wt.1), covering commands, configuration, directory strategies, shell integration, and safety notes.
