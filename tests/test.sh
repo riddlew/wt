@@ -60,11 +60,27 @@ path=$(cat "$TEMP/path")
 # refuse to guess which worktree the user intended to remove.
 "$ROOT/wt" co fix/do-thing > "$TEMP/path"
 path=$(cat "$TEMP/path")
+# Navigation accepts branch names, folder names, and full paths.
+[[ "$("$ROOT/wt" cd fix/do-thing)" == "$path" ]]
+[[ "$("$ROOT/wt" cd fix-do-thing)" == "$path" ]]
+[[ "$("$ROOT/wt" sw fix-do-thing)" == "$path" ]]
+[[ "$("$ROOT/wt" switch fix-do-thing)" == "$path" ]]
+[[ "$("$ROOT/wt" cd "$path")" == "$path" ]]
+# Unknown copy target must not silently fall back to the current checkout.
+if "$ROOT/wt" copy not-an-existing-worktree > /dev/null 2>&1; then
+  echo 'ERROR: wt copy accepted a missing target' >&2; exit 1
+fi
 git worktree add -q -b fix-do-thing "$TEMP/other-branch" main
 if "$ROOT/wt" rm fix-do-thing > "$TEMP/ambiguous.stdout" 2> "$TEMP/ambiguous.stderr"; then
   echo 'ERROR: ambiguous worktree name was accepted' >&2; exit 1
 fi
 grep -q 'ambiguous worktree' "$TEMP/ambiguous.stderr"
+if "$ROOT/wt" cd fix-do-thing > /dev/null 2>&1; then
+  echo 'ERROR: ambiguous cd target selected' >&2; exit 1
+fi
+if "$ROOT/wt" copy fix-do-thing > /dev/null 2>&1; then
+  echo 'ERROR: ambiguous copy target selected' >&2; exit 1
+fi
 [[ -d "$path" && -d "$TEMP/other-branch" ]]
 "$ROOT/wt" rm "$path"
 "$ROOT/wt" rm fix-do-thing
@@ -86,4 +102,11 @@ printf 'TOKEN=x\n' > .env
 git config --local --add wt.copy .env
 "$ROOT/wt" create copy-env > "$TEMP/path"
 [[ "$(cat "$(cat "$TEMP/path")/.env")" == 'TOKEN=x' ]]
+copy_path=$(cat "$TEMP/path")
+rm "$copy_path/.env"
+"$ROOT/wt" copy copy-env
+[[ "$(cat "$copy_path/.env")" == 'TOKEN=x' ]]
+rm "$copy_path/.env"
+"$ROOT/wt" copy "$copy_path"
+[[ "$(cat "$copy_path/.env")" == 'TOKEN=x' ]]
 echo 'tests passed'
