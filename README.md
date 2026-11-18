@@ -24,6 +24,20 @@ source /path/to/wt/shell/wt.zsh
 
 Without shell integration, the commands work but cannot change the calling shell's working directory; `wt cd` prints the destination.
 
+## Manual page
+
+The repository includes a standard section 1 man page at [`man/wt.1`](man/wt.1), covering commands, configuration, directory strategies, shell integration, and safety notes.
+
+Install it for your user account:
+
+```bash
+mkdir -p ~/.local/share/man/man1
+install -m 644 man/wt.1 ~/.local/share/man/man1/wt.1
+man wt
+```
+
+If `man wt` cannot find it, add `~/.local/share/man` to your `MANPATH`, or view it directly with `man -l man/wt.1`. On Linux, you may need `mandb` to refresh the manual index.
+
 ## Commands
 
 ```text
