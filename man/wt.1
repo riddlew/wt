@@ -99,10 +99,11 @@ is omitted, select interactively.
 is an alias.
 .TP
 .BI "wt cd " [ branch ]
-Find an existing worktree without creating one. With shell integration,
-change to its directory; otherwise, print its path. Omitting
-.I branch
-opens an interactive selector.
+Find an existing worktree without creating one. Accept an exact checked-out
+branch, the worktree's final directory name, or its absolute path. With
+shell integration, change to its directory; otherwise, print its path.
+Ambiguous names are rejected. Omitting the argument opens an interactive
+selector. Tab completion suggests both branch and folder names.
 .B wt sw
 and
 .B wt switch
@@ -146,10 +147,14 @@ and
 The merge request identifier is required; interactive MR selection
 is not implemented.
 .TP
-.BI "wt copy " [ branch ]
+.BI "wt copy " [ branch | name | path ]
 Populate the current or specified worktree with selected untracked/ignored
-files and symlinks from the primary worktree. Existing destination files
-are not overwritten, and tracked files are not copied.
+files and symlinks from the primary worktree. Accept an existing worktree's
+checked-out branch name, final directory name, or absolute path. Names
+matching multiple worktrees are rejected. An unknown explicit target is
+an error and is never replaced with the current worktree. Bash/Zsh tab
+completion suggests the registered worktree branches and folder names.
+Existing destination files are not overwritten, and tracked files are not copied.
 .TP
 .BI "wt migrate " [ \-\-dry\-run ]
 Move non-primary worktrees to the directories dictated by the active
