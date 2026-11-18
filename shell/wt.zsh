@@ -6,6 +6,17 @@ wt() {
       destination=$(command wt --print-path "$@") || return $?
       [[ -n "$destination" ]] && builtin cd -- "$destination"
       ;;
+    rename)
+      local previous_root previous_pwd destination
+      previous_root=$(command git rev-parse --show-toplevel 2>/dev/null || :)
+      previous_pwd=$PWD
+      destination=$(command wt --print-path "$@") || return $?
+      if [[ -n "$previous_root" && ! -d "$previous_root" && "$previous_pwd" == "$previous_root"* ]]; then
+        builtin cd -- "$destination${previous_pwd#"$previous_root"}"
+      else
+        print -r -- "$destination"
+      fi
+      ;;
     *) command wt "$@" ;;
   esac
 }
@@ -24,7 +35,7 @@ _wt_worktree_candidates() {
 }
 _wt() {
   local -a commands branches worktrees
-  commands=(config clone create co cd sw switch ls status rm remove pr mr copy migrate cleanup prune info version help)
+  commands=(config clone create co cd sw switch ls status rm remove pr mr copy migrate cleanup prune rename info version help)
   if (( CURRENT == 2 )); then
     compadd -- "${commands[@]}"
   else
@@ -32,7 +43,8 @@ _wt() {
       co|checkout|create)
         branches=("${(@f)$(command git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null)}")
         compadd -- "${branches[@]}" ;;
-      rm|remove|cd|sw|switch|copy)
+      rm|remove|cd|sw|switch|copy|rename)
+        [[ "${words[2]}" == rename && "$CURRENT" -ne 3 ]] && return 0
         local -a matches
         matches=("${(@f)$(_wt_worktree_candidates)}")
         typeset -U matches
