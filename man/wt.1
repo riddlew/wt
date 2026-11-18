@@ -1,0 +1,403 @@
+.TH WT 1 "November 2026" "wt 0.2.0" "User Commands"
+.SH NAME
+wt \- manage Git worktrees from Bash and Zsh
+.SH SYNOPSIS
+.B wt
+.RI [ global-option ] " command " [ arguments ]
+.br
+.B wt
+.RB [ \-\-help | \-h ]
+.SH DESCRIPTION
+.B wt
+is a shell-based helper for creating, switching between, listing, removing,
+and inspecting Git worktrees. It uses Git's native worktree commands and
+stores its configuration in
+.BR git-config (1).
+The executable is written in Bash; optional Bash and Zsh integration changes
+the calling shell's directory after navigation commands.
+.PP
+Most commands operate on the Git repository associated with the current
+working directory. In commands with interactive selection, an omitted branch
+or worktree name opens
+.B fzf
+when available, or a numbered terminal menu.
+.SH COMMANDS
+.TP
+.B wt config
+Run an interactive configuration wizard, saving settings to global Git
+configuration. Blank or whitespace-only input accepts the displayed default:
+an existing value in the chosen scope, if present, or a built-in value.
+.TP
+.B wt config \-\-local
+Run the wizard for the current repository rather than the global scope.
+.B wt config \-\-global
+is equivalent to
+.BR "wt config" .
+.TP
+.B wt config show
+Display
+.B wt.*
+settings stored in the selected configuration scope. This is not a merged
+view of effective configuration.
+.TP
+.BI "wt config get " key
+Read a configuration key from the selected scope.
+.TP
+.BI "wt config set " "key value"
+Set a configuration key in the selected scope.
+.TP
+.BI "wt config unset " key
+Remove all values for a configuration key from the selected scope.
+.PP
+For
+.BR show ,
+.BR get ,
+.BR set ,
+and
+.BR unset ,
+add
+.B \-\-local
+or
+.B \-\-global
+after
+.B config
+or after the action to select the scope. Key names can be written either
+as
+.B root
+or
+.BR wt.root .
+.TP
+.BI "wt clone " "repository " [ destination ]
+Clone a repository to an organized directory. A
+.B owner/repo
+shorthand is interpreted as a GitHub repository; full Git URLs are supported.
+By default, the destination is determined by
+.B wt.repoRoot
+and
+.BR wt.repoPattern .
+An explicit
+.I destination
+must be an absolute path and overrides that layout.
+.TP
+.BI "wt create " "branch " [ base ]
+Create a new branch and corresponding worktree. Without
+.IR base ,
+the starting ref is chosen from the remote default branch, then
+.B main
+or
+.BR master ,
+and finally the current branch.
+.TP
+.BI "wt co " [ branch ]
+Check out an existing local or
+.B origin
+remote branch in a worktree. If it is already checked out in a worktree,
+return that worktree's path. When
+.I branch
+is omitted, select interactively.
+.B wt checkout
+is an alias.
+.TP
+.BI "wt cd " [ branch ]
+Find an existing worktree without creating one. With shell integration,
+change to its directory; otherwise, print its path. Omitting
+.I branch
+opens an interactive selector.
+.B wt sw
+and
+.B wt switch
+are aliases.
+.TP
+.B wt ls
+List worktrees, their branches, and paths, marking the current worktree.
+.B wt list
+is an alias.
+.TP
+.B wt status
+Show clean/dirty status and available upstream ahead/behind counts for
+each worktree.
+.TP
+.BI "wt rm " [ branch ]
+Remove a non-primary worktree while retaining its Git branch. Git refuses
+to remove worktrees with uncommitted changes by default. With no
+.IR branch ,
+select a worktree interactively.
+.B wt remove
+is an alias.
+.TP
+.BI "wt pr " [ number | URL ]
+Create or enter a worktree for a GitHub pull request using the
+.B gh
+CLI. With no argument, select an open pull request interactively.
+.TP
+.BI "wt mr " "number | URL"
+Create or enter a worktree for a GitLab merge request using
+.B glab
+and
+.BR jq .
+The merge request identifier is required; interactive MR selection
+is not implemented.
+.TP
+.BI "wt copy " [ branch ]
+Populate the current or specified worktree with selected untracked/ignored
+files and symlinks from the primary worktree. Existing destination files
+are not overwritten, and tracked files are not copied.
+.TP
+.BI "wt migrate " [ \-\-dry\-run ]
+Move non-primary worktrees to the directories dictated by the active
+strategy and pattern. With
+.BR \-\-dry\-run ,
+print the planned moves without modifying the filesystem.
+.TP
+.BI "wt cleanup \-\-stale " [ \-\-stale\-days=N ]
+Report worktrees whose last commit is older than
+.I N
+days (default 30) or whose upstream is gone. This command reports
+candidates; it does not delete worktrees.
+.TP
+.BI "wt prune " [ git-worktree-prune-options ]
+Pass arguments to
+.B git worktree prune
+to remove obsolete administrative metadata.
+.TP
+.B wt info
+Show the effective root, strategy, separator, path pattern, clone root,
+and clone pattern.
+.TP
+.B wt version
+Print the shell implementation version.
+.TP
+.BR wt help " | " "wt \-\-help"
+Display short usage information.
+.SH GLOBAL OPTIONS
+These options are processed before the command.
+.TP
+.B \-\-no\-copy
+Skip configured file copying after worktree creation or checkout.
+.TP
+.B \-\-print\-path
+Print the destination path for shell integration. This is primarily
+intended for the Bash and Zsh wrappers.
+.TP
+.BR \-h ", " \-\-help
+Show command usage.
+.SH CONFIGURATION
+Configuration is stored in Git's standard configuration files. Unless
+.B \-\-local
+is specified,
+.B wt config
+writes to the global scope. During normal operations,
+.B git config
+provides its usual precedence, including local repository settings
+over global settings.
+.PP
+Run
+.B wt config
+to configure the options interactively. To change one option directly:
+.PP
+.nf
+.RS
+wt config set strategy sibling-repo
+git config --global wt.separator -
+git config --local --add wt.copy .env
+.RE
+.fi
+.PP
+Supported configuration keys:
+.TP
+.B wt.root
+Root for worktrees using the
+.B global
+strategy. Default:
+.BR ~/.worktrees .
+.TP
+.B wt.strategy
+Directory placement strategy. Default:
+.BR global .
+.TP
+.B wt.pattern
+Custom worktree path template. When set, this overrides the built-in
+template for any strategy. Required for the
+.B custom
+strategy.
+.TP
+.B wt.separator
+Replacement for slashes in branch names, such as
+.B /
+(default),
+.BR \- ,
+or
+.BR _ .
+The interactive wizard accepts these three values.
+.TP
+.B wt.repoRoot
+Root directory for cloned repositories. Default:
+.BR ~/dev/repos .
+.TP
+.B wt.repoPattern
+Clone directory template. Default:
+.BR "{.repoRoot}/{.repo.Host}/{.repo.Owner}/{.repo.Name}/{.branch}" .
+.TP
+.B wt.copy
+Repeatable pattern for untracked or ignored files to copy to a new
+worktree. Add multiple values with
+.BR "git config --add" .
+.TP
+.B wt.link
+Repeatable path to symlink from the primary worktree into new worktrees.
+.TP
+.B wt.exclude
+Repeatable pattern excluding files from population.
+.TP
+.B wt.copyIgnored
+If
+.BR true ,
+attempt to copy all ignored files. Default:
+.BR false .
+.PP
+A
+.B .worktreeinclude
+file in the primary worktree can also list copy patterns, one per line.
+Pattern matching is based on shell globs and is not a complete
+implementation of Git's gitignore syntax.
+.SH WORKTREE STRATEGIES
+The directory layouts below assume the primary checkout is
+.B ~/dev/repo
+and the branch is
+.BR feature .
+.TP
+.B global
+.BR ~/.worktrees/repo/feature
+.TP
+.B sibling-repo
+.BR ~/dev/repo-feature
+.TP
+.B parent-branches
+.BR ~/dev/feature
+.TP
+.B parent-worktrees
+.BR ~/dev/repo.worktrees/feature
+.TP
+.B parent-dotdir
+.BR ~/dev/.worktrees/feature
+.TP
+.B inside-dotdir
+.BR ~/dev/repo/.worktrees/feature
+.TP
+.B custom
+Use the value of
+.BR wt.pattern .
+.PP
+Worktree templates recognize
+.BR "{.worktreeRoot}" ,
+.BR "{.repo.Main}" ,
+.BR "{.repo.Name}" ,
+.BR "{.branch}" ,
+and environment substitutions
+.B "{.env.NAME}"
+or
+.BR "{.env.NAME:-fallback}" .
+Clone templates also recognize
+.BR "{.repoRoot}" ,
+.BR "{.repo.Host}" ,
+and
+.BR "{.repo.Owner}" .
+These are a subset of the original Go program's template variables.
+.SH SHELL INTEGRATION
+Installing the executable alone is sufficient for Git worktree operations,
+but a subprocess cannot change the working directory of its parent shell.
+To make
+.BR "wt cd" ,
+.BR "wt co" ,
+and other navigation commands change directories, source the appropriate
+wrapper in the shell startup file:
+.PP
+.B Bash
+.RS
+.nf
+source /path/to/wt/shell/wt.bash
+.fi
+.RE
+.PP
+.B Zsh
+.RS
+.nf
+source /path/to/wt/shell/wt.zsh
+.fi
+.RE
+.PP
+The wrappers provide shell-specific completion as well.
+.SH INSTALLATION
+Copy the
+.B wt
+executable into a directory on
+.BR PATH .
+Install this manual as
+.B wt.1
+in a directory searched by the system's manual-page reader, such as
+.BR ~/.local/share/man/man1/ .
+.PP
+.nf
+.RS
+mkdir -p ~/.local/bin ~/.local/share/man/man1
+install -m 755 wt ~/.local/bin/wt
+install -m 644 man/wt.1 ~/.local/share/man/man1/wt.1
+man wt
+.RE
+.fi
+.PP
+If the local manual directory is not searched automatically, add
+.B ~/.local/share/man
+to
+.B MANPATH
+or view the file directly using
+.BR "man -l man/wt.1" .
+.SH EXAMPLES
+.nf
+.RS
+wt config
+wt create feature-login
+wt co feature-login
+wt cd main
+wt rm feature-login
+wt pr 123
+wt status
+wt migrate --dry-run
+wt cleanup --stale --stale-days=14
+.RE
+.fi
+.SH SAFETY AND LIMITATIONS
+.B wt
+rejects numerous unsafe destination paths, including Git metadata,
+existing worktrees, and selected sensitive user/system configuration
+locations. It validates symlink-resolved destinations before performing
+filesystem operations.
+.PP
+Failed or interrupted worktree creation attempts to remove the newly
+registered worktree; a newly created branch is removed only if its
+commit has not changed. Migration attempts to reverse earlier moves if
+a later move fails.
+.PP
+These protections are not atomic. Concurrent changes to filesystem paths
+and failed rollback operations may still require manual intervention.
+Avoid using worktree patterns that target sensitive directories.
+.PP
+This implementation intentionally omits hooks, hook trust, TOML, Fish
+integration, JSON output, and the original Go version's CI dashboard.
+.SH EXIT STATUS
+Returns zero on success and nonzero on an error. A failure during a
+multi-step filesystem operation may report that manual cleanup is needed.
+.SH AUTHOR AND LICENSE
+The shell implementation is maintained at
+.BR https://github.com/riddlew/wt .
+It is independently implemented and inspired by the original
+MIT-licensed Go worktree manager by Tim Van Wassenhove:
+.BR https://github.com/timvw/wt .
+This project is not an official fork of that program.
+.PP
+MIT license.
+.SH SEE ALSO
+.BR git-worktree (1),
+.BR git-config (1),
+.BR git-clone (1),
+.BR fzf (1)
